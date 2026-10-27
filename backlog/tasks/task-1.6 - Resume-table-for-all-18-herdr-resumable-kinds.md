@@ -1,9 +1,11 @@
 ---
 id: TASK-1.6
 title: Resume table for all 18 herdr-resumable kinds
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-27 09:06'
+updated_date: '2026-10-27 09:37'
 labels:
   - ready-for-agent
 dependencies:
@@ -27,4 +29,11 @@ Resume support for claude, codex, copilot, devin, droid, kimi, mastracode, pi, o
 - [ ] #1 One sweep table row per kind asserts the exact prefilled argv from an original argv carrying flags and a stale resume token
 - [ ] #2 Recipes match herdr 0.9.5 planner output for each kind
 - [ ] #3 Unsupported kinds and missing session refs get no action and a reason
+- [ ] #4 Positional prompt arguments are dropped from the resume command for every kind; value-taking flags keep their values
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+DECISION (user): resume command drops positional arguments (CLI prompts) so they are not replayed on wake. Requires, per kind, the flags that take a value; an unknown value-taking flag may lose its value (resume still works). Applies to claude too (fix the existing claude recipe).
+<!-- SECTION:NOTES:END -->
