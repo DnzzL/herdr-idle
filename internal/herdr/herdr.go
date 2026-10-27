@@ -13,11 +13,29 @@ import (
 	"sync/atomic"
 )
 
+// PaneID names a pane within one herdr session, like "w1:p2".
+type PaneID string
+
+// Kind is an agent kind herdr detects, like "claude".
+type Kind string
+
+// Status is an agent's state as herdr reports it.
+type Status string
+
+// The statuses herdr reports.
+const (
+	StatusIdle    Status = "idle"
+	StatusWorking Status = "working"
+	StatusBlocked Status = "blocked"
+	StatusDone    Status = "done"
+	StatusUnknown Status = "unknown"
+)
+
 // Agent is one agent pane from session.snapshot.
 type Agent struct {
-	PaneID         string        `json:"pane_id"`
-	Agent          string        `json:"agent"`
-	Status         string        `json:"agent_status"`
+	PaneID         PaneID        `json:"pane_id"`
+	Agent          Kind          `json:"agent"`
+	Status         Status        `json:"agent_status"`
 	Session        *AgentSession `json:"agent_session"`
 	Focused        bool          `json:"focused"`
 	StateChangeSeq uint64        `json:"state_change_seq"`
@@ -28,7 +46,7 @@ type Agent struct {
 // or "path"; Value is what that agent's resume flag takes.
 type AgentSession struct {
 	Source string `json:"source"`
-	Agent  string `json:"agent"`
+	Agent  Kind   `json:"agent"`
 	Kind   string `json:"kind"`
 	Value  string `json:"value"`
 }
@@ -45,23 +63,25 @@ type ProcessInfo struct {
 type Process struct {
 	PID  int      `json:"pid"`
 	Argv []string `json:"argv"`
+	// Cwd is the process's working directory; empty when unknown.
+	Cwd string `json:"cwd"`
 }
 
-// AgentReport is pane.report_agent. State is idle|working|blocked|unknown.
+// AgentReport is pane.report_agent. State is any status but done.
 type AgentReport struct {
-	PaneID string `json:"pane_id"`
+	PaneID PaneID `json:"pane_id"`
 	Source string `json:"source"`
-	Agent  string `json:"agent"`
-	State  string `json:"state"`
+	Agent  Kind   `json:"agent"`
+	State  Status `json:"state"`
 }
 
 // MetadataReport is pane.report_metadata, limited to the fields herdr-idle
 // sets.
 type MetadataReport struct {
-	PaneID          string            `json:"pane_id"`
+	PaneID          PaneID            `json:"pane_id"`
 	Source          string            `json:"source"`
 	AppliesToSource string            `json:"applies_to_source,omitempty"`
-	DisplayAgent    string            `json:"display_agent,omitempty"`
+	DisplayAgent    Kind              `json:"display_agent,omitempty"`
 	StateLabels     map[string]string `json:"state_labels,omitempty"`
 }
 
@@ -104,11 +124,11 @@ func (c *Client) Snapshot(ctx context.Context) ([]Agent, error) {
 }
 
 // ProcessInfo returns the pane's shell pid and foreground process group.
-func (c *Client) ProcessInfo(ctx context.Context, paneID string) (ProcessInfo, error) {
+func (c *Client) ProcessInfo(ctx context.Context, paneID PaneID) (ProcessInfo, error) {
 	var res struct {
 		ProcessInfo ProcessInfo `json:"process_info"`
 	}
-	err := c.call(ctx, "pane.process_info", map[string]string{"pane_id": paneID}, &res)
+	err := c.call(ctx, "pane.process_info", map[string]PaneID{"pane_id": paneID}, &res)
 	return res.ProcessInfo, err
 }
 
@@ -118,7 +138,7 @@ const recentLines = 1000
 
 // ReadRecent returns the last lines of the agent pane's screen as plain
 // text, scrollback included (agent.read, source recent).
-func (c *Client) ReadRecent(ctx context.Context, paneID string) (string, error) {
+func (c *Client) ReadRecent(ctx context.Context, paneID PaneID) (string, error) {
 	var res struct {
 		Read struct {
 			Text string `json:"text"`
@@ -160,8 +180,8 @@ func (c *Client) PluginEnabled(ctx context.Context, id string) (bool, error) {
 }
 
 // SendText types text into the pane without pressing Enter.
-func (c *Client) SendText(ctx context.Context, paneID, text string) error {
-	return c.call(ctx, "pane.send_text", map[string]string{"pane_id": paneID, "text": text}, nil)
+func (c *Client) SendText(ctx context.Context, paneID PaneID, text string) error {
+	return c.call(ctx, "pane.send_text", map[string]any{"pane_id": paneID, "text": text}, nil)
 }
 
 func (c *Client) call(ctx context.Context, method string, params, out any) error {
@@ -173,7 +193,7 @@ func (c *Client) call(ctx context.Context, method string, params, out any) error
 	defer conn.Close()
 	if deadline, ok := ctx.Deadline(); ok {
 		if err := conn.SetDeadline(deadline); err != nil {
-			return fmt.Errorf("herdr %s: %w", method, err)
+			return fmt.Errorf("herdr %s: %v", method, err)
 		}
 	}
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
@@ -185,14 +205,14 @@ func (c *Client) call(ctx context.Context, method string, params, out any) error
 		"params": params,
 	})
 	if err != nil {
-		return fmt.Errorf("herdr %s: %w", method, err)
+		return fmt.Errorf("herdr %s: %v", method, err)
 	}
 	if _, err := conn.Write(append(req, '\n')); err != nil {
-		return fmt.Errorf("herdr %s: %w", method, err)
+		return fmt.Errorf("herdr %s: %v", method, err)
 	}
 	line, err := bufio.NewReader(conn).ReadBytes('\n')
 	if err != nil {
-		return fmt.Errorf("herdr %s: %w", method, err)
+		return fmt.Errorf("herdr %s: %v", method, err)
 	}
 	var resp struct {
 		Result json.RawMessage `json:"result"`
@@ -202,7 +222,7 @@ func (c *Client) call(ctx context.Context, method string, params, out any) error
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(line, &resp); err != nil {
-		return fmt.Errorf("herdr %s: decode response: %w", method, err)
+		return fmt.Errorf("herdr %s: decode response: %v", method, err)
 	}
 	if resp.Error != nil {
 		return &Error{Method: method, Code: resp.Error.Code, Message: resp.Error.Message}
@@ -211,7 +231,7 @@ func (c *Client) call(ctx context.Context, method string, params, out any) error
 		return nil
 	}
 	if err := json.Unmarshal(resp.Result, out); err != nil {
-		return fmt.Errorf("herdr %s: decode result: %w", method, err)
+		return fmt.Errorf("herdr %s: decode result: %v", method, err)
 	}
 	return nil
 }

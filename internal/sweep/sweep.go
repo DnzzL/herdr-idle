@@ -23,12 +23,12 @@ import (
 // Herdr is the part of herdr's API a sweep uses.
 type Herdr interface {
 	Snapshot(ctx context.Context) ([]herdr.Agent, error)
-	ProcessInfo(ctx context.Context, paneID string) (herdr.ProcessInfo, error)
+	ProcessInfo(ctx context.Context, paneID herdr.PaneID) (herdr.ProcessInfo, error)
 	// ReadRecent returns the pane's recent screen as plain text.
-	ReadRecent(ctx context.Context, paneID string) (string, error)
+	ReadRecent(ctx context.Context, paneID herdr.PaneID) (string, error)
 	ReportAgent(ctx context.Context, r herdr.AgentReport) error
 	ReportMetadata(ctx context.Context, r herdr.MetadataReport) error
-	SendText(ctx context.Context, paneID, text string) error
+	SendText(ctx context.Context, paneID herdr.PaneID, text string) error
 }
 
 // Signaler stops processes.
@@ -64,15 +64,17 @@ type Sweeper struct {
 
 // Outcome is what a sweep decided for one agent pane.
 type Outcome struct {
-	PaneID string
-	Agent  string
+	PaneID herdr.PaneID
+	Agent  herdr.Kind
 	Asleep bool   // put asleep by this sweep
 	Reason string // why it was or was not put asleep
 }
 
+// PluginID is the herdr plugin id herdr-idle runs and reports under; it
+// must match herdr-plugin.toml.
+const PluginID = "dnzzl.idle"
+
 const (
-	// source is the plugin id herdr-idle reports under.
-	source = "dnzzl.idle"
 	// standInKind is the kind an asleep pane is reported as. herdr drops a
 	// report of the real kind once that agent has exited, and cannot resume
 	// this one, so a herdr restart never wakes the pane.
@@ -84,32 +86,63 @@ const (
 	// checked: herdr's process detector (300ms tick) wipes plugin reports
 	// when it notices the agent exited, which can be after the shell is back.
 	reportSettle = time.Second
+	// settleGrace bounds the herdr calls that follow a pane's wait.
+	settleGrace = 15 * time.Second
+	// settleLockWait bounds the wait for another sweep's settle: it may be
+	// waiting out several agents, one exitTimeout each.
+	settleLockWait = 10 * time.Minute
 )
 
-// termIgnored is putAsleep's reason when the agent outlived SIGTERM. It is
+// termIgnored is the reason given when the agent outlived SIGTERM. It is
 // never sent SIGKILL: whatever it is doing is left to finish.
 var termIgnored = fmt.Sprintf("agent still running %s after SIGTERM, left alone", exitTimeout)
 
 // Run sweeps the session once. It returns one outcome per agent pane, and
 // one per asleep pane it rearmed. A failure on one pane does not stop the
-// others; their errors are joined. Sweeps of the same state file, and
-// PaneClosed, wait for each other.
+// others; their errors are joined.
+//
+// Once an agent has been sent SIGTERM, ctx ending no longer stops the sweep
+// from putting its pane asleep; a pane left half done (the process died, a
+// herdr call failed, the agent exited late) is finished by a later sweep.
+// Sweeps of the same state file, and PaneClosed, wait for each other only
+// while the state file is read and written, never while an agent exits.
 func (s Sweeper) Run(ctx context.Context) ([]Outcome, error) {
-	return s.sweep(ctx, false)
+	cfg, ok, cfgErr := s.Config.Load()
+	if !ok {
+		return nil, cfgErr
+	}
+	outcomes, err := s.stopQuiet(ctx, cfg, false)
+	if outcomes == nil && err != nil {
+		return nil, err
+	}
+	settled, serr := s.settle(ctx)
+	for _, o := range settled {
+		i := slices.IndexFunc(outcomes, func(p Outcome) bool { return p.PaneID == o.PaneID })
+		if i < 0 {
+			outcomes = append(outcomes, o)
+			continue
+		}
+		outcomes[i].Asleep, outcomes[i].Reason = o.Asleep, o.Reason
+	}
+	return outcomes, errors.Join(cfgErr, err, serr)
 }
 
 // Preview says what Run would decide for every agent pane, as a dry run
 // does, and changes nothing: not even the quiet clocks.
 func (s Sweeper) Preview(ctx context.Context) ([]Outcome, error) {
-	return s.sweep(ctx, true)
-}
-
-func (s Sweeper) sweep(ctx context.Context, preview bool) ([]Outcome, error) {
 	cfg, ok, cfgErr := s.Config.Load()
 	if !ok {
 		return nil, cfgErr
 	}
-	errs := []error{cfgErr}
+	outcomes, err := s.stopQuiet(ctx, cfg, true)
+	return outcomes, errors.Join(cfgErr, err)
+}
+
+// stopQuiet updates the quiet clocks and sends SIGTERM to every agent pane
+// that may be put asleep, under the state lock. Each pane's resume command
+// is saved before its agent is signalled. With preview it only says what it
+// would do.
+func (s Sweeper) stopQuiet(ctx context.Context, cfg config.Config, preview bool) ([]Outcome, error) {
 	if !preview {
 		unlock, err := lockState(ctx, s.StatePath)
 		if err != nil {
@@ -126,94 +159,245 @@ func (s Sweeper) sweep(ctx context.Context, preview bool) ([]Outcome, error) {
 		return nil, err
 	}
 	now := time.Now()
-	next := observe(prev, agents, now)
+	st := observe(prev, agents, now)
 
 	var outcomes []Outcome
+	var errs []error
 	for _, a := range agents {
 		o := Outcome{PaneID: a.PaneID, Agent: a.Agent}
-		o.Reason = whyAwake(a, next[a.PaneID], now, cfg)
+		o.Reason = whyAwake(a, st[a.PaneID], now, cfg)
 		if o.Reason == "" {
-			argv, reason, err := s.putAsleep(ctx, a, preview || cfg.DryRun)
+			reason, err := s.stop(ctx, a, st, preview || cfg.DryRun)
 			if err != nil {
 				errs = append(errs, fmt.Errorf("pane %s: %w", a.PaneID, err))
 				reason = "error: " + err.Error()
-			}
-			if argv != nil {
-				ps := next[a.PaneID]
-				ps.Kind, ps.SessionRef, ps.ResumeArgv, ps.AsleepAt = a.Agent, a.Session.Value, argv, time.Now()
-				ps.CapturePath = s.capturePath(a.PaneID)
-				next[a.PaneID] = ps
-				o.Asleep = true
-			}
-			if reason == termIgnored {
-				ps := next[a.PaneID]
-				ps.TermIgnored = true
-				next[a.PaneID] = ps
 			}
 			o.Reason = reason
 		}
 		outcomes = append(outcomes, o)
 	}
-	if preview {
-		return outcomes, errors.Join(errs...)
-	}
-	rearmed, err := s.rearmUnlisted(ctx, agents, next)
-	outcomes = append(outcomes, rearmed...)
-	errs = append(errs, err)
-	if err := saveState(s.StatePath, next); err != nil {
-		errs = append(errs, err)
+	if !preview {
+		errs = append(errs, saveState(s.StatePath, st))
 	}
 	return outcomes, errors.Join(errs...)
 }
 
-// rearmOnly rearms the asleep panes herdr no longer lists, and does nothing
-// else: the daemon runs it between sweeps, so a herdr restart it outlives is
-// noticed within a check.
-func (s Sweeper) rearmOnly(ctx context.Context) ([]Outcome, error) {
-	unlock, err := lockState(ctx, s.StatePath)
+// stop sends SIGTERM to the pane's agent once everything that resumes it is
+// saved in st and on disk. It returns why it left the pane alone, or that
+// the pane is being put asleep. A dry run stops before the first action.
+func (s Sweeper) stop(ctx context.Context, a herdr.Agent, st state, dryRun bool) (string, error) {
+	// The session ref vanishes from herdr once the agent exits: read
+	// everything needed to resume before stopping it.
+	info, err := s.Herdr.ProcessInfo(ctx, a.PaneID)
+	if err != nil {
+		return "", err
+	}
+	agentProc, ok := groupLeader(info)
+	if !ok {
+		return "no agent process in the foreground", nil
+	}
+	children, err := s.Processes.Children(ctx, agentProc.PID)
+	if err != nil {
+		return "", err
+	}
+	if p, busy := busyChild(agentProc.PID, append(info.Foreground, children...)); busy {
+		return "running " + strings.Join(p.Argv, " "), nil
+	}
+	argv, ok := resumeArgv(a.Agent, agentProc.Argv, a.Session.Value)
+	if !ok {
+		return fmt.Sprintf("agent command line not recognised: %q", agentProc.Argv), nil
+	}
+	before := st[a.PaneID]
+	ps := before
+	ps.Kind, ps.SessionRef, ps.ResumeArgv, ps.Cwd = a.Agent, a.Session.Value, argv, agentProc.Cwd
+	if dryRun {
+		return "would be put asleep, resume with: " + ps.prefill(), nil
+	}
+
+	// Nothing on screen may be lost: no capture, no SIGTERM.
+	ps.CapturePath, err = s.capture(ctx, a.PaneID)
+	if err != nil {
+		return "", err
+	}
+	// Nor the resume command: it is on disk before the agent can exit.
+	ps.StoppedAt, ps.TermIgnored = time.Now(), false
+	st[a.PaneID] = ps
+	if err := saveState(s.StatePath, st); err != nil {
+		st[a.PaneID] = before
+		return "", err
+	}
+	if err := s.Signaler.Terminate(info.ForegroundGroupID); err != nil {
+		st[a.PaneID] = before
+		return "", err
+	}
+	return "being put asleep", nil
+}
+
+// settle finishes putting asleep every pane whose agent was sent SIGTERM,
+// and rearms every asleep pane herdr no longer lists (after a herdr restart
+// our reports are gone). Each is reported asleep once its shell owns the
+// terminal, and prefilled unless that shell already was. It never starts an
+// agent. It returns one outcome per pane it did something for.
+//
+// Settles run one at a time, outside the state lock. A settle carries on
+// after ctx ends for the panes already signalled, and then skips the rearms.
+func (s Sweeper) settle(ctx context.Context) ([]Outcome, error) {
+	rearm := ctx.Err() == nil
+	ctx = context.WithoutCancel(ctx)
+	lockCtx, cancel := context.WithTimeout(ctx, settleLockWait)
+	unlock, err := lock(lockCtx, s.StatePath+".settle.lock", true)
+	cancel()
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
+
+	// Writers replace the file whole: it reads consistently without the
+	// lock.
 	st, err := loadState(s.StatePath)
 	if err != nil {
 		return nil, err
 	}
-	agents, err := s.Herdr.Snapshot(ctx)
-	if err != nil {
-		return nil, err
+	todo := state{}
+	listed := map[herdr.PaneID]bool{}
+	for id, ps := range st {
+		if ps.stopping() {
+			todo[id] = ps
+		}
 	}
-	return s.rearmUnlisted(ctx, agents, st)
-}
+	if rearm && len(st) > len(todo) {
+		agents, err := s.Herdr.Snapshot(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, a := range agents {
+			listed[a.PaneID] = true
+		}
+		for id, ps := range st {
+			if !ps.AsleepAt.IsZero() && !listed[id] {
+				todo[id] = ps
+			}
+		}
+	}
+	if len(todo) == 0 {
+		return nil, nil
+	}
 
-// rearmUnlisted rearms every asleep pane in st that herdr does not list:
-// after a herdr restart our reports are gone and asleep panes are plain
-// shells. It returns one outcome per pane it tried.
-func (s Sweeper) rearmUnlisted(ctx context.Context, agents []herdr.Agent, st state) ([]Outcome, error) {
-	listed := map[string]bool{}
-	for _, a := range agents {
-		listed[a.PaneID] = true
-	}
 	var outcomes []Outcome
 	var errs []error
-	for _, id := range slices.Sorted(maps.Keys(st)) {
-		ps := st[id]
-		if ps.AsleepAt.IsZero() || listed[id] {
-			continue
+	for _, id := range slices.Sorted(maps.Keys(todo)) {
+		ps := todo[id]
+		// A pane stopped by an earlier sweep gets one check.
+		deadline := time.Now().Add(exitTimeout)
+		if ps.stopping() {
+			deadline = time.Now().Add(max(time.Until(ps.StoppedAt.Add(exitTimeout)), 0))
 		}
-		reason, err := s.rearm(ctx, id, ps)
+		pctx, cancel := context.WithTimeout(ctx, time.Until(deadline)+settleGrace)
+		next, o, err := s.settlePane(pctx, id, ps, deadline)
+		cancel()
+		todo[id] = next
 		if err != nil {
 			errs = append(errs, fmt.Errorf("pane %s: %w", id, err))
-			reason = "error: " + err.Error()
+			o = Outcome{PaneID: id, Agent: ps.Kind, Reason: "error: " + err.Error()}
 		}
-		outcomes = append(outcomes, Outcome{PaneID: id, Agent: ps.Kind, Reason: reason})
+		if o.Reason != "" {
+			outcomes = append(outcomes, o)
+		}
 	}
-	return outcomes, errors.Join(errs...)
+
+	// Only panes still known are written back: one closed meanwhile stays
+	// forgotten.
+	unlockState, err := lockState(ctx, s.StatePath)
+	if err != nil {
+		return outcomes, errors.Join(append(errs, err)...)
+	}
+	defer unlockState()
+	st, err = loadState(s.StatePath)
+	if err != nil {
+		return outcomes, errors.Join(append(errs, err)...)
+	}
+	for id, ps := range todo {
+		if _, ok := st[id]; ok {
+			st[id] = ps
+		}
+	}
+	return outcomes, errors.Join(append(errs, saveState(s.StatePath, st))...)
+}
+
+// settlePane waits until deadline for the pane's shell to own the terminal,
+// then reports it asleep and, unless that shell has it already, prints where
+// its screen was saved and prefills the resume command. It returns the
+// pane's new state and an outcome, whose Reason is empty when nothing
+// changed.
+func (s Sweeper) settlePane(ctx context.Context, paneID herdr.PaneID, ps paneState, deadline time.Time) (paneState, Outcome, error) {
+	o := Outcome{PaneID: paneID, Agent: ps.Kind}
+	shell, err := s.waitForShell(ctx, paneID, deadline)
+	if herr, ok := errors.AsType[*herdr.Error](err); ok && herr.Code == "pane_not_found" {
+		o.Reason = "pane not found, rearm on a later sweep"
+		return ps, o, nil
+	}
+	if err != nil {
+		return ps, o, err
+	}
+	if shell == 0 {
+		switch {
+		case !ps.stopping():
+			o.Reason = "shell busy, rearm on a later sweep"
+		case !ps.TermIgnored:
+			ps.TermIgnored = true
+			o.Reason = termIgnored
+		}
+		return ps, o, nil
+	}
+
+	// The agent is gone: from here on the pane must end up prefilled
+	// whatever herdr does with the report, or the session is hard to find.
+	listed, err := s.reportAsleep(ctx, paneID, deadline)
+	if err != nil {
+		return ps, o, err
+	}
+	if err := s.Herdr.ReportMetadata(ctx, herdr.MetadataReport{
+		PaneID:          paneID,
+		Source:          PluginID,
+		AppliesToSource: PluginID,
+		DisplayAgent:    ps.Kind,
+		StateLabels:     map[string]string{"idle": "asleep"},
+	}); err != nil {
+		return ps, o, err
+	}
+	// A shell keeps its prefill until the user acts on it; a new shell (a
+	// herdr restart) has lost it, and its scrollback with the notice.
+	if ps.PrefilledShell != shell {
+		if ps.CapturePath != "" {
+			// Run with Enter before the prefill, so the prefill stays
+			// editable at the next prompt. The leading space keeps it out
+			// of shell history where the shell honours that.
+			notice := " " + shellJoin([]string{"echo", "herdr-idle: screen saved to " + ps.CapturePath}) + "\r"
+			if err := s.Herdr.SendText(ctx, paneID, notice); err != nil {
+				return ps, o, err
+			}
+		}
+		if err := s.Herdr.SendText(ctx, paneID, ps.prefill()); err != nil {
+			return ps, o, err
+		}
+		ps.PrefilledShell = shell
+	}
+
+	o.Reason = "rearmed"
+	if ps.stopping() {
+		ps.AsleepAt, ps.TermIgnored = time.Now(), false
+		o.Asleep, o.Reason = true, "put asleep"
+	}
+	if !listed {
+		o.Reason += ", but herdr did not keep it in the agent list"
+	}
+	return ps, o, nil
 }
 
 // PaneClosed forgets a pane herdr has closed: its state entry and its capture
-// file are removed. An unknown pane is not an error.
-func (s Sweeper) PaneClosed(ctx context.Context, paneID string) error {
+// file are removed. An unknown pane is not an error. It waits for no agent
+// to exit, only for the state file to be free.
+func (s Sweeper) PaneClosed(ctx context.Context, paneID herdr.PaneID) error {
 	unlock, err := lockState(ctx, s.StatePath)
 	if err != nil {
 		return err
@@ -236,125 +420,9 @@ func (s Sweeper) PaneClosed(ctx context.Context, paneID string) error {
 	return saveState(s.StatePath, st)
 }
 
-// putAsleep stops the pane's agent and leaves its shell prefilled with the
-// resume command. It returns the prefilled argv once the pane is asleep, or
-// nil and the reason it left the pane alone. A dry run stops before the first
-// action.
-func (s Sweeper) putAsleep(ctx context.Context, a herdr.Agent, dryRun bool) ([]string, string, error) {
-	// The session ref vanishes from herdr once the agent exits: read
-	// everything needed to resume before stopping it.
-	info, err := s.Herdr.ProcessInfo(ctx, a.PaneID)
-	if err != nil {
-		return nil, "", err
-	}
-	agentProc, ok := groupLeader(info)
-	if !ok {
-		return nil, "no agent process in the foreground", nil
-	}
-	children, err := s.Processes.Children(ctx, agentProc.PID)
-	if err != nil {
-		return nil, "", err
-	}
-	if p, busy := busyChild(agentProc.PID, append(info.Foreground, children...)); busy {
-		return nil, "running " + strings.Join(p.Argv, " "), nil
-	}
-	argv, ok := resumeArgv(a.Agent, agentProc.Argv, a.Session.Value)
-	if !ok {
-		return nil, fmt.Sprintf("agent command line not recognised: %q", agentProc.Argv), nil
-	}
-	if dryRun {
-		return nil, "would be put asleep, resume with: " + shellJoin(argv), nil
-	}
-
-	// Nothing on screen may be lost: no capture, no SIGTERM.
-	capture, err := s.capture(ctx, a.PaneID)
-	if err != nil {
-		return nil, "", err
-	}
-
-	if err := s.Signaler.Terminate(info.ForegroundGroupID); err != nil {
-		return nil, "", err
-	}
-	deadline := time.Now().Add(exitTimeout)
-	gone, err := s.waitForShell(ctx, a.PaneID, deadline)
-	if err != nil {
-		return nil, "", err
-	}
-	if !gone {
-		return nil, termIgnored, nil
-	}
-
-	// The agent is stopped: from here on the pane must end up prefilled
-	// whatever herdr does with the report, or the session is hard to find.
-	listed, err := s.markAsleep(ctx, a.PaneID, a.Agent, argv, capture, deadline)
-	if err != nil {
-		return nil, "", err
-	}
-	if !listed {
-		return argv, "put asleep, but herdr did not keep it in the agent list", nil
-	}
-	return argv, "put asleep", nil
-}
-
-// rearm marks an asleep pane herdr no longer lists, once its shell owns the
-// terminal. It never starts the agent: the resume command is only typed.
-func (s Sweeper) rearm(ctx context.Context, paneID string, ps paneState) (string, error) {
-	deadline := time.Now().Add(exitTimeout)
-	free, err := s.waitForShell(ctx, paneID, deadline)
-	if herr, ok := errors.AsType[*herdr.Error](err); ok && herr.Code == "pane_not_found" {
-		return "pane not found, rearm on a later sweep", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	if !free {
-		return "shell busy, rearm on a later sweep", nil
-	}
-	listed, err := s.markAsleep(ctx, paneID, ps.Kind, ps.ResumeArgv, ps.CapturePath, deadline)
-	if err != nil {
-		return "", err
-	}
-	if !listed {
-		return "rearmed, but herdr did not keep it in the agent list", nil
-	}
-	return "rearmed", nil
-}
-
-// markAsleep reports the pane as an asleep agent of kind, prints where its
-// screen was saved (if it was) and prefills its shell with argv. It reports
-// whether herdr kept the pane listed.
-func (s Sweeper) markAsleep(ctx context.Context, paneID, kind string, argv []string, capture string, deadline time.Time) (bool, error) {
-	listed, err := s.reportAsleep(ctx, paneID, deadline)
-	if err != nil {
-		return false, err
-	}
-	if err := s.Herdr.ReportMetadata(ctx, herdr.MetadataReport{
-		PaneID:          paneID,
-		Source:          source,
-		AppliesToSource: source,
-		DisplayAgent:    kind,
-		StateLabels:     map[string]string{"idle": "asleep"},
-	}); err != nil {
-		return false, err
-	}
-	if capture != "" {
-		// Run with Enter before the prefill, so the prefill stays editable
-		// at the next prompt. The leading space keeps it out of shell
-		// history where the shell honours that.
-		notice := " " + shellJoin([]string{"echo", "herdr-idle: screen saved to " + capture}) + "\r"
-		if err := s.Herdr.SendText(ctx, paneID, notice); err != nil {
-			return false, err
-		}
-	}
-	if err := s.Herdr.SendText(ctx, paneID, shellJoin(argv)); err != nil {
-		return false, err
-	}
-	return listed, nil
-}
-
 // capture saves the pane's recent screen to its file in CaptureDir and
 // returns the file's path.
-func (s Sweeper) capture(ctx context.Context, paneID string) (string, error) {
+func (s Sweeper) capture(ctx context.Context, paneID herdr.PaneID) (string, error) {
 	text, err := s.Herdr.ReadRecent(ctx, paneID)
 	if err != nil {
 		return "", err
@@ -371,37 +439,37 @@ func (s Sweeper) capture(ctx context.Context, paneID string) (string, error) {
 
 // capturePath is the pane's capture file. Pane ids look like w1:p2; keep
 // file names portable.
-func (s Sweeper) capturePath(paneID string) string {
-	return filepath.Join(s.CaptureDir, strings.ReplaceAll(paneID, ":", "-")+".txt")
+func (s Sweeper) capturePath(paneID herdr.PaneID) string {
+	return filepath.Join(s.CaptureDir, strings.ReplaceAll(string(paneID), ":", "-")+".txt")
 }
 
 // waitForShell polls until the pane's shell owns the terminal again, so the
-// prefill lands at its prompt instead of in the exiting agent. It reports
-// false if that has not happened by deadline.
-func (s Sweeper) waitForShell(ctx context.Context, paneID string, deadline time.Time) (bool, error) {
+// prefill lands at its prompt instead of in the exiting agent, and returns
+// the shell's pid. It returns 0 if that has not happened by deadline.
+func (s Sweeper) waitForShell(ctx context.Context, paneID herdr.PaneID, deadline time.Time) (int, error) {
 	for {
 		info, err := s.Herdr.ProcessInfo(ctx, paneID)
 		if err != nil {
-			return false, err
+			return 0, err
 		}
 		if info.ShellPID != 0 && info.ForegroundGroupID == info.ShellPID {
-			return true, nil
+			return info.ShellPID, nil
 		}
 		if !time.Now().Before(deadline) {
-			return false, nil
+			return 0, nil
 		}
 		if err := sleep(ctx, pollEvery); err != nil {
-			return false, err
+			return 0, err
 		}
 	}
 }
 
 // reportAsleep reports the pane under the stand-in kind until herdr still
 // lists it reportSettle later, or deadline passes.
-func (s Sweeper) reportAsleep(ctx context.Context, paneID string, deadline time.Time) (bool, error) {
+func (s Sweeper) reportAsleep(ctx context.Context, paneID herdr.PaneID, deadline time.Time) (bool, error) {
 	for {
 		if err := s.Herdr.ReportAgent(ctx, herdr.AgentReport{
-			PaneID: paneID, Source: source, Agent: standInKind, State: "idle",
+			PaneID: paneID, Source: PluginID, Agent: standInKind, State: herdr.StatusIdle,
 		}); err != nil {
 			return false, err
 		}

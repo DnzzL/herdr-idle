@@ -73,7 +73,7 @@ func (d Daemon) Run(ctx context.Context) error {
 		if err := sleep(ctx, min(checkEvery, time.Until(next))); err != nil {
 			return nil
 		}
-		enabled, err := d.Plugin.PluginEnabled(ctx, source)
+		enabled, err := d.Plugin.PluginEnabled(ctx, PluginID)
 		switch {
 		case ctx.Err() != nil, errors.Is(err, herdr.ErrUnreachable):
 			return nil
@@ -85,7 +85,7 @@ func (d Daemon) Run(ctx context.Context) error {
 			// A herdr restart this daemon outlived (it never saw herdr
 			// down) left the new server's daemon locked out: rearm now
 			// rather than at the next sweep.
-			outcomes, err := d.Sweeper.rearmOnly(ctx)
+			outcomes, err := d.Sweeper.settle(ctx)
 			if ctx.Err() != nil {
 				return nil
 			}

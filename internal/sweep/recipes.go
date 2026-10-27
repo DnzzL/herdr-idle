@@ -1,6 +1,10 @@
 package sweep
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/DnzzL/herdr-idle/internal/herdr"
+)
 
 // opts maps option names to their arity.
 type opts map[string]arity
@@ -32,7 +36,7 @@ var (
 // come from herdr 0.9.5 (src/agent_resume.rs `plan`, src/detect/mod.rs).
 // Each kind's option lists name their source; prompt options are dropped
 // like positional prompts.
-var recipes = map[string]recipe{
+var recipes = map[herdr.Kind]recipe{
 	// `claude --help`, Claude Code 2.1.311.
 	"claude": {
 		command:  "claude",

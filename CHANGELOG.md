@@ -7,7 +7,8 @@ What changed for someone using the plugin. Dates are release dates.
 - First release. Agent panes that stay quiet for an hour are put **asleep**:
   the agent and its MCP servers are stopped to free their memory, and the
   pane stays where it was, back at its shell, with the command that resumes
-  the same session, with the same flags, typed on the input line.
+  the same session, with the same flags, in the same directory, typed on
+  the input line.
   Press Enter to wake it; Ctrl+C to clear the line and use a plain shell.
 - Asleep panes stay in the sidebar agent list under their real name, tagged
   `asleep`. `herdr agent list` shows them as agent `maki`: that is the
@@ -18,7 +19,8 @@ What changed for someone using the plugin. Dates are release dates.
   working or blocked, while it runs anything besides its MCP or language
   servers, or when it is excluded. Agents herdr cannot resume, or without a
   session id, are left alone. An agent that hasn't stopped 30 seconds after
-  being asked is left running, never killed.
+  being asked is left running, never killed; if it exits later, its pane is
+  put asleep at the next check.
 - Asleep panes stay asleep across a herdr restart instead of all waking at
   once, and come back listed and prefilled.
 - `config.toml` sets `idle_minutes` (60), `interval_minutes` (10), `exclude`
