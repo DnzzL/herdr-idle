@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      # The install script fetches the release named after the manifest
+      # version, so a tag that disagrees with it would never be installed.
+      - name: Check the manifest version
+        run: |
+          manifest=$(sed -n 's/^version *= *"\(.*\)"/\1/p' herdr-plugin.toml | head -1)
+          if [ "v${manifest}" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::herdr-plugin.toml says ${manifest}, tag is ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+
+      - name: Build binaries
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            os="${target%/*}"; arch="${target#*/}"
+            GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 \
+              go build -trimpath -ldflags "-s -w -X main.version=${version}" \
+              -o "dist/herdr-idle_${os}_${arch}" .
+          done
+          cd dist && sha256sum herdr-idle_* > checksums.txt
+
+      # Release notes are the CHANGELOG section for this tag, written for
+      # users. Fall back to generated notes only if somebody forgot it.
+      - name: Extract the release notes
+        id: notes
+        run: |
+          awk -v tag="## ${GITHUB_REF_NAME} " '
+            index($0, tag) == 1 { found = 1; next }
+            found && /^## / { exit }
+            found && !seen && /^[[:space:]]*$/ { next }
+            found { seen = 1; print }
+          ' CHANGELOG.md > /tmp/notes.md
+          if [ -s /tmp/notes.md ]; then
+            echo "have_notes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::no CHANGELOG.md section for ${GITHUB_REF_NAME}"
+            echo "have_notes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [ "${{ steps.notes.outputs.have_notes }}" = "true" ]; then
+              gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+                --title "$GITHUB_REF_NAME" --notes-file /tmp/notes.md
+            else
+              gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+                --title "$GITHUB_REF_NAME" --generate-notes
+            fi
+          fi
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber --repo "$GITHUB_REPOSITORY"
