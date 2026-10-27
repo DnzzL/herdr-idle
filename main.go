@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -123,8 +124,11 @@ func newSweeper(getenv func(string) string) (sweep.Sweeper, error) {
 	return sweep.Sweeper{
 		Herdr:     herdr.New(socket),
 		Signaler:  groupSignaler{},
+		Processes: psProcesses{},
 		StatePath: filepath.Join(stateDir, stateFile(socket)),
-		Config:    &config.File{Path: cfgPath},
+		// Screens saved before sleep, one directory per session like the state.
+		CaptureDir: filepath.Join(stateDir, strings.TrimSuffix(stateFile(socket), ".json")+"-screens"),
+		Config:     &config.File{Path: cfgPath},
 	}, nil
 }
 

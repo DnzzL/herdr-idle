@@ -18,6 +18,9 @@ func whyAwake(a herdr.Agent, ps paneState, now time.Time, cfg config.Config) str
 	if cfg.Excludes(a.PaneID) || (a.Session != nil && cfg.Excludes(a.Session.Value)) {
 		return "excluded"
 	}
+	if ps.TermIgnored {
+		return "ignored SIGTERM, left alone"
+	}
 	if a.Focused {
 		return "focused"
 	}
