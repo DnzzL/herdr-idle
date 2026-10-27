@@ -27,6 +27,9 @@ func whyAwake(a herdr.Agent, ps paneState, now time.Time, idleAfter time.Duratio
 	if a.Session == nil || a.Session.Agent != a.Agent || !slices.Contains(r.refKinds, a.Session.Kind) || a.Session.Value == "" {
 		return "no session ref"
 	}
+	if r.resume(a.Session.Value) == nil {
+		return fmt.Sprintf("session ref %q cannot be resumed", a.Session.Value)
+	}
 	if quiet := now.Sub(ps.LastChangeAt); quiet < idleAfter {
 		return fmt.Sprintf("quiet for %s, needs %s", quiet.Truncate(time.Minute), idleAfter)
 	}

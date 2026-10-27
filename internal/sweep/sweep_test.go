@@ -268,6 +268,88 @@ func TestPrefillKeepsFlagsAndResumesTheCurrentSession(t *testing.T) {
 	}
 }
 
+// TestEveryResumableKindIsPrefilledWithItsRecipe holds one row per kind herdr
+// 0.9.5 resumes: an argv with flags, a stale resume token and a prompt gives
+// herdr's planner command (src/agent_resume.rs) plus the flags. The option
+// lists behind each row, and their sources, are in recipes.go.
+func TestEveryResumableKindIsPrefilledWithItsRecipe(t *testing.T) {
+	const (
+		id   = "s-new"
+		path = "/home/me/.pi/sessions/s-new.jsonl"
+		cur  = "/home/me/.local/share/cursor-agent/versions/2026.10.1/"
+	)
+	tests := []struct {
+		kind, refKind, ref string
+		argv               []string
+		want               string
+	}{
+		{"claude", "id", id, []string{"claude", "--model", "opus", "--resume", "old", "fix it"},
+			"claude --resume s-new --model opus"},
+		{"codex", "id", id,
+			[]string{"codex", "--sandbox", "workspace-write", "resume", "--last", "-c", "model=o3", "go on"},
+			"codex resume s-new --sandbox workspace-write -c model=o3"},
+		{"copilot", "id", id,
+			[]string{"copilot", "--model", "gpt-5", "--resume=old", "-i", "fix it", "--allow-tool", "shell"},
+			"copilot --resume=s-new --model gpt-5 --allow-tool shell"},
+		{"devin", "id", id,
+			[]string{"devin", "--permission-mode", "accept-edits", "-r", "old", "--", "fix it"},
+			"devin --resume s-new --permission-mode accept-edits"},
+		{"droid", "id", id, []string{"droid", "--auto", "high", "--resume", "old", "review app.tsx"},
+			"droid --resume s-new --auto high"},
+		{"kimi", "id", id, []string{"kimi", "-m", "k2", "--session", "old", "-p", "fix it", "--yolo"},
+			"kimi --session s-new -m k2 --yolo"},
+		{"mastracode", "id", id,
+			[]string{"node", "/usr/lib/node_modules/mastracode/dist/cli.js", "--mode", "plan", "resume", "old"},
+			"mastracode --thread s-new --mode plan"},
+		{"pi", "path", path,
+			[]string{"pi", "--model", "sonnet", "--session", "/old.jsonl", "@notes.md", "fix it"},
+			"pi --session " + path + " --model sonnet"},
+		{"omp", "path", path, []string{"omp", "--thinking", "high", "-r", "old", "fix it"},
+			"omp --resume=" + path + " --thinking high"},
+		{"hermes", "id", id, []string{"hermes", "chat", "-m", "hermes-4", "--resume", "old", "-q", "hi"},
+			"hermes --resume s-new -m hermes-4"},
+		{"opencode", "id", id,
+			[]string{"opencode", "-m", "anthropic/sonnet", "-s", "old", "--prompt", "fix it", "."},
+			"opencode --session s-new -m anthropic/sonnet"},
+		{"qodercli", "id", id, []string{"qodercli", "--permission-mode", "plan", "-r", "old", "fix it"},
+			"qodercli --resume s-new --permission-mode plan"},
+		{"qwen", "id", id, []string{"qwen", "--approval-mode", "yolo", "--resume", "old", "fix it"},
+			"qwen --resume s-new --approval-mode yolo"},
+		{"kilo", "id", id, []string{"kilo", "-m", "x/y", "--continue", "--fork", "--prompt", "fix"},
+			"kilo --session s-new -m x/y"},
+		{"cursor", "id", id,
+			[]string{cur + "node", cur + "index.js", "--model", "gpt-5", "--resume", "old", "fix it"},
+			"cursor-agent --resume s-new --model gpt-5"},
+		{"agy", "id", id, []string{"agy", "--mode", "plan", "-c", "--conversation", "old", "fix"},
+			"agy --conversation s-new --mode plan"},
+		{"grok", "id", id, []string{"grok", "-m", "grok-4", "--continue", "--fork-session", "fix"},
+			"grok --resume s-new -m grok-4"},
+		{"letta", "id", id,
+			[]string{"letta", "-m", "sonnet", "--agent", "agent-1", "--conversation", "old", "hi"},
+			"letta --conversation s-new -m sonnet"},
+		{"letta", "id", "default:agent-9", []string{"letta", "--new", "-a", "agent-1"},
+			"letta --conversation default --agent agent-9"},
+		{"pi", "id", "0b1c", []string{"pi", "-c"}, "pi --session 0b1c"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.kind+" "+tt.want, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				a, p := claudePane(tt.argv...)
+				a.Agent = tt.kind
+				a.Session = &herdr.AgentSession{
+					Source: "herdr:" + tt.kind, Agent: tt.kind, Kind: tt.refKind, Value: tt.ref,
+				}
+				h, s := newWorld(t, a, p)
+				putAsleep(t, s)
+				want := "send_text " + pane + " " + tt.want
+				if len(h.events) != 4 || h.events[3] != want {
+					t.Fatalf("events:\n got %q\nwant last %q", h.events, want)
+				}
+			})
+		})
+	}
+}
+
 func TestPanesThatMustStayAwakeGetNoAction(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -285,6 +367,13 @@ func TestPanesThatMustStayAwakeGetNoAction(t *testing.T) {
 			2 * time.Hour, "no resume recipe for gemini"},
 		{"a pane herdr-idle put asleep", func(a *herdr.Agent) { a.Agent = "maki"; a.Session = nil },
 			2 * time.Hour, "no resume recipe for maki"},
+		{"path ref for a kind resumed by id", func(a *herdr.Agent) { a.Session.Kind = "path" },
+			2 * time.Hour, "no session ref"},
+		{"letta default conversation without an agent",
+			func(a *herdr.Agent) {
+				a.Agent, a.Session.Agent, a.Session.Value = "letta", "letta", "default:"
+			},
+			2 * time.Hour, `session ref "default:" cannot be resumed`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
