@@ -2,6 +2,7 @@ package sweep
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/DnzzL/herdr-idle/internal/herdr"
@@ -23,7 +24,7 @@ func whyAwake(a herdr.Agent, ps paneState, now time.Time, idleAfter time.Duratio
 	if !ok {
 		return "no resume recipe for " + a.Agent
 	}
-	if a.Session == nil || a.Session.Agent != a.Agent || a.Session.Kind != r.refKind || a.Session.Value == "" {
+	if a.Session == nil || a.Session.Agent != a.Agent || !slices.Contains(r.refKinds, a.Session.Kind) || a.Session.Value == "" {
 		return "no session ref"
 	}
 	if quiet := now.Sub(ps.LastChangeAt); quiet < idleAfter {
