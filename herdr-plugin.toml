@@ -7,3 +7,34 @@ platforms = ["linux", "macos"]
 
 [[build]]
 command = ["go", "build", "-o", "bin/herdr-idle", "."]
+
+[[actions]]
+id = "idle-now"
+title = "Idle: put quiet agents asleep now"
+contexts = ["global"]
+command = ["./bin/herdr-idle", "sweep"]
+
+# Actions run without a terminal: these two open the panes below.
+[[actions]]
+id = "preview"
+title = "Idle: preview which agents would sleep"
+contexts = ["global"]
+command = ["sh", "-c", "exec \"${HERDR_BIN_PATH:-herdr}\" plugin pane open --plugin dnzzl.idle --entrypoint preview"]
+
+[[actions]]
+id = "config"
+title = "Idle: edit config"
+contexts = ["global"]
+command = ["sh", "-c", "exec \"${HERDR_BIN_PATH:-herdr}\" plugin pane open --plugin dnzzl.idle --entrypoint config"]
+
+[[panes]]
+id = "preview"
+title = "Idle: preview"
+placement = "overlay"
+command = ["./bin/herdr-idle", "preview", "--hold"]
+
+[[panes]]
+id = "config"
+title = "Idle: config"
+placement = "overlay"
+command = ["./bin/herdr-idle", "config"]
