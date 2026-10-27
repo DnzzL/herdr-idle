@@ -37,7 +37,8 @@ Usage:
                            sleep; changes nothing (--hold: wait for Enter)
   herdr-idle config        Open config.toml in $VISUAL or $EDITOR, creating it
                            with commented defaults
-  herdr-idle pane-closed   Forget the pane in HERDR_PANE_ID (herdr pane.closed hook)
+  herdr-idle forget-closed Forget panes herdr no longer has (herdr pane, tab and
+                           workspace close hook)
   herdr-idle version       Print the version
 `
 
@@ -79,8 +80,8 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdin i
 		return runPreview(ctx, getenv, true, stdin, stdout)
 	case len(args) == 1 && args[0] == "config":
 		return editConfig(ctx, getenv, stdin, stdout)
-	case len(args) == 1 && args[0] == "pane-closed":
-		return runPaneClosed(ctx, getenv)
+	case len(args) == 1 && args[0] == "forget-closed":
+		return runForgetClosed(ctx, getenv)
 	default:
 		return errUsage
 	}
@@ -251,19 +252,15 @@ func configPath(getenv func(string) string) (string, error) {
 	return filepath.Join(dir, "config.toml"), nil
 }
 
-// runPaneClosed is herdr's pane.closed hook: herdr passes the closed pane in
-// HERDR_PANE_ID.
-func runPaneClosed(ctx context.Context, getenv func(string) string) error {
-	_, statePath, err := sessionPaths(getenv)
+// runForgetClosed is herdr's pane.closed, tab.closed and workspace.closed
+// hook.
+func runForgetClosed(ctx context.Context, getenv func(string) string) error {
+	socket, statePath, err := sessionPaths(getenv)
 	if err != nil {
 		return err
 	}
-	paneID := getenv("HERDR_PANE_ID")
-	if paneID == "" {
-		return errors.New("HERDR_PANE_ID is not set: run from herdr's pane.closed hook")
-	}
-	s := sweep.Sweeper{StatePath: statePath}
-	return s.PaneClosed(ctx, herdr.PaneID(paneID))
+	s := sweep.Sweeper{Herdr: herdr.New(socket), StatePath: statePath}
+	return s.ForgetClosed(ctx)
 }
 
 // stateDir is the plugin state directory herdr hands its plugin commands, or

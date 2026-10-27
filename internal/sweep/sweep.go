@@ -29,6 +29,8 @@ type Herdr interface {
 	ReportAgent(ctx context.Context, r herdr.AgentReport) error
 	ReportMetadata(ctx context.Context, r herdr.MetadataReport) error
 	SendText(ctx context.Context, paneID herdr.PaneID, text string) error
+	// Panes returns every pane in the session, agent or not.
+	Panes(ctx context.Context) ([]herdr.PaneID, error)
 }
 
 // Signaler stops processes.
@@ -45,7 +47,7 @@ type Processes interface {
 }
 
 // Sweeper holds what a sweep needs. The zero value is not usable: Run needs
-// every field set, PaneClosed only StatePath.
+// every field set, ForgetClosed only Herdr and StatePath.
 type Sweeper struct {
 	Herdr     Herdr
 	Signaler  Signaler
@@ -104,7 +106,7 @@ var termIgnored = fmt.Sprintf("agent still running %s after SIGTERM, left alone"
 // Once an agent has been sent SIGTERM, ctx ending no longer stops the sweep
 // from putting its pane asleep; a pane left half done (the process died, a
 // herdr call failed, the agent exited late) is finished by a later sweep.
-// Sweeps of the same state file, and PaneClosed, wait for each other only
+// Sweeps of the same state file, and ForgetClosed, wait for each other only
 // while the state file is read and written, never while an agent exits.
 func (s Sweeper) Run(ctx context.Context) ([]Outcome, error) {
 	cfg, ok, cfgErr := s.Config.Load()
@@ -397,10 +399,16 @@ func (s Sweeper) settlePane(ctx context.Context, paneID herdr.PaneID, ps paneSta
 	return ps, o, nil
 }
 
-// PaneClosed forgets a pane herdr has closed: its state entry and its capture
-// file are removed. An unknown pane is not an error. It waits for no agent
-// to exit, only for the state file to be free.
-func (s Sweeper) PaneClosed(ctx context.Context, paneID herdr.PaneID) error {
+// ForgetClosed forgets every pane herdr no longer has: its state entry and
+// its capture file are removed. herdr runs it on pane, tab and workspace
+// close, since closing a tab or workspace sends no pane.closed for the panes
+// in it. If herdr cannot list its panes, nothing is forgotten. It waits for
+// no agent to exit, only for the state file to be free.
+func (s Sweeper) ForgetClosed(ctx context.Context) error {
+	open, err := s.Herdr.Panes(ctx)
+	if err != nil {
+		return err
+	}
 	unlock, err := lockState(ctx, s.StatePath)
 	if err != nil {
 		return err
@@ -410,17 +418,20 @@ func (s Sweeper) PaneClosed(ctx context.Context, paneID herdr.PaneID) error {
 	if err != nil {
 		return err
 	}
-	ps, ok := st[paneID]
-	if !ok {
-		return nil
-	}
-	if ps.CapturePath != "" {
-		if err := os.Remove(ps.CapturePath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("remove capture: %w", err)
+	var errs []error
+	for id, ps := range st {
+		if slices.Contains(open, id) {
+			continue
 		}
+		if ps.CapturePath != "" {
+			if err := os.Remove(ps.CapturePath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				errs = append(errs, fmt.Errorf("remove capture: %w", err))
+				continue
+			}
+		}
+		delete(st, id)
 	}
-	delete(st, paneID)
-	return saveState(s.StatePath, st)
+	return errors.Join(append(errs, saveState(s.StatePath, st))...)
 }
 
 // capture saves the pane's recent screen to its file in CaptureDir and

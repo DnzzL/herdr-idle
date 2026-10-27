@@ -11,9 +11,18 @@ command = ["sh", "scripts/install.sh"]
 [[startup]]
 command = ["./bin/herdr-idle", "daemon"]
 
+# Closing a tab or workspace sends no pane.closed for the panes in it.
 [[events]]
 on = "pane.closed"
-command = ["./bin/herdr-idle", "pane-closed"]
+command = ["./bin/herdr-idle", "forget-closed"]
+
+[[events]]
+on = "tab.closed"
+command = ["./bin/herdr-idle", "forget-closed"]
+
+[[events]]
+on = "workspace.closed"
+command = ["./bin/herdr-idle", "forget-closed"]
 
 [[actions]]
 id = "idle-now"

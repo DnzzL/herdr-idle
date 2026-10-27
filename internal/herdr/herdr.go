@@ -123,6 +123,23 @@ func (c *Client) Snapshot(ctx context.Context) ([]Agent, error) {
 	return res.Snapshot.Agents, nil
 }
 
+// Panes returns every pane in the session, agent or not.
+func (c *Client) Panes(ctx context.Context) ([]PaneID, error) {
+	var res struct {
+		Panes []struct {
+			PaneID PaneID `json:"pane_id"`
+		} `json:"panes"`
+	}
+	if err := c.call(ctx, "pane.list", struct{}{}, &res); err != nil {
+		return nil, err
+	}
+	ids := make([]PaneID, len(res.Panes))
+	for i, p := range res.Panes {
+		ids[i] = p.PaneID
+	}
+	return ids, nil
+}
+
 // ProcessInfo returns the pane's shell pid and foreground process group.
 func (c *Client) ProcessInfo(ctx context.Context, paneID PaneID) (ProcessInfo, error) {
 	var res struct {

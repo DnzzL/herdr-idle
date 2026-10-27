@@ -49,7 +49,7 @@ func lock(ctx context.Context, path string, wait bool) (unlock func(), err error
 }
 
 // lockState serialises the state file's writers (daemon sweep, idle-now,
-// pane-closed hook): each holds it from read to write, so none overwrites
+// close-event hook): each holds it from read to write, so none overwrites
 // what another changed in between.
 func lockState(ctx context.Context, statePath string) (unlock func(), err error) {
 	return lock(ctx, statePath+".lock", true)

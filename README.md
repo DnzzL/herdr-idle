@@ -159,8 +159,8 @@ are never put asleep. When herdr adds or changes a kind, this table follows.
   its path, run with Enter, then the resume command, without Enter.
 - Runs `ps` to see what each candidate agent is running.
 - Writes one state file per herdr session and one screen capture per asleep
-  pane in the plugin state directory. Closing a pane deletes its entry and
-  capture.
+  pane in the plugin state directory. Closing a pane, or the tab or
+  workspace holding it, deletes its entry and capture.
 - Edits nothing outside its own config and state directories.
 
 ## Known gaps
@@ -170,7 +170,7 @@ are never put asleep. When herdr adds or changes a kind, this table follows.
 - After a herdr restart, an asleep pane whose shell is busy (a command typed
   before it was restored as asleep) is restored once the shell is free.
 - An asleep pane herdr does not bring back after a restart keeps its state
-  entry and capture file.
+  entry and capture file until the next pane, tab or workspace is closed.
 - When the background process outlives a quick herdr restart, its log is lost
   from then on: herdr no longer reads it.
 

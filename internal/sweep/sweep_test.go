@@ -61,6 +61,45 @@ type fakeHerdr struct {
 	dropReports bool
 	// sendErr fails every send_text.
 	sendErr error
+	// closed panes are gone from herdr; listErr fails pane.list.
+	closed  map[herdr.PaneID]bool
+	listErr error
+}
+
+func (f *fakeHerdr) Panes(context.Context) ([]herdr.PaneID, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	var out []herdr.PaneID
+	for id := range f.procs {
+		if !f.closed[id] {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+// close is herdr closing panes, alone or with their tab or workspace.
+func (f *fakeHerdr) close(ids ...herdr.PaneID) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed == nil {
+		f.closed = map[herdr.PaneID]bool{}
+	}
+	for _, id := range ids {
+		f.closed[id] = true
+	}
+}
+
+// forgetClosed closes panes in herdr, then runs the close-event hook.
+func forgetClosed(t *testing.T, h *fakeHerdr, s sweep.Sweeper, ids ...herdr.PaneID) {
+	t.Helper()
+	h.close(ids...)
+	if err := s.ForgetClosed(t.Context()); err != nil {
+		t.Errorf("forget closed: %v", err)
+	}
 }
 
 func (f *fakeHerdr) ReadRecent(_ context.Context, paneID herdr.PaneID) (string, error) {
@@ -79,6 +118,9 @@ func (f *fakeHerdr) Snapshot(context.Context) ([]herdr.Agent, error) {
 	defer f.mu.Unlock()
 	var out []herdr.Agent
 	for _, a := range f.agents {
+		if f.closed[a.PaneID] {
+			continue
+		}
 		if r, ok := f.lastReport(a.PaneID); ok {
 			out = append(out, herdr.Agent{PaneID: a.PaneID, Agent: r.Agent, Status: r.State})
 			continue
@@ -108,6 +150,9 @@ func (f *fakeHerdr) ProcessInfo(_ context.Context, paneID herdr.PaneID) (herdr.P
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	p, ok := f.procs[paneID]
+	if f.closed[paneID] {
+		return herdr.ProcessInfo{}, &herdr.Error{Method: "pane.process_info", Code: "pane_not_found"}
+	}
 	if !ok {
 		return herdr.ProcessInfo{}, fmt.Errorf("no pane %s", paneID)
 	}
@@ -627,13 +672,11 @@ func TestWokenPaneSleepsAgainOnlyAfterAFullQuietPeriod(t *testing.T) {
 func TestClosedPaneLeavesNoStateOrCaptureBehind(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		a, p := claudePane("claude")
-		_, s := newWorld(t, a, p)
+		h, s := newWorld(t, a, p)
 		putAsleep(t, s)
 		capture := recordCapture(t, s, pane)
 
-		if err := s.PaneClosed(t.Context(), pane); err != nil {
-			t.Fatal(err)
-		}
+		forgetClosed(t, h, s, pane)
 
 		if _, err := os.Stat(capture); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("capture file still there: %v", err)
@@ -663,9 +706,7 @@ func TestClosingAnotherPaneLeavesAsleepPaneAlone(t *testing.T) {
 		h, s := newWorld(t, a, p)
 		putAsleep(t, s)
 		capture := recordCapture(t, s, pane)
-		if err := s.PaneClosed(t.Context(), "w9:p9"); err != nil {
-			t.Fatal(err)
-		}
+		forgetClosed(t, h, s, "w9:p9")
 		if _, err := os.Stat(capture); err != nil {
 			t.Errorf("capture of a pane still open removed: %v", err)
 		}
@@ -1073,9 +1114,7 @@ func TestClosingAnAsleepPaneRemovesItsScreenCapture(t *testing.T) {
 		if len(captures) != 1 {
 			t.Fatalf("captures = %q, want one", captures)
 		}
-		if err := s.PaneClosed(t.Context(), pane); err != nil {
-			t.Fatal(err)
-		}
+		forgetClosed(t, h, s, pane)
 		if _, err := os.Stat(captures[0]); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("capture still there after the pane closed: %v", err)
 		}
@@ -1094,9 +1133,7 @@ func TestClosingAWokenPaneRemovesItsScreenCapture(t *testing.T) {
 		h.wake(pane)
 		run(t, s) // notices the wake
 
-		if err := s.PaneClosed(t.Context(), pane); err != nil {
-			t.Fatal(err)
-		}
+		forgetClosed(t, h, s, pane)
 		if _, err := os.Stat(captures[0]); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("capture of a woken pane left behind after it closed: %v", err)
 		}
@@ -1235,9 +1272,7 @@ func TestPaneClosedDuringASweepStaysForgotten(t *testing.T) {
 		var wg sync.WaitGroup
 		s.Signaler.(*fakeSignaler).onTerminate = func() {
 			wg.Go(func() {
-				if err := s.PaneClosed(t.Context(), pane); err != nil {
-					t.Errorf("pane closed: %v", err)
-				}
+				forgetClosed(t, h, s, pane)
 			})
 		}
 		run(t, s)
@@ -1430,9 +1465,7 @@ func TestPaneClosedDoesNotWaitForAnAgentToExit(t *testing.T) {
 		s.Signaler.(*fakeSignaler).onTerminate = func() {
 			wg.Go(func() {
 				start := time.Now()
-				if err := s.PaneClosed(t.Context(), pane); err != nil {
-					t.Errorf("pane closed: %v", err)
-				}
+				forgetClosed(t, h, s, pane)
 				took = time.Since(start)
 			})
 		}
@@ -1443,6 +1476,55 @@ func TestPaneClosedDoesNotWaitForAnAgentToExit(t *testing.T) {
 		}
 		if st := readState(t, s); st[pane] != nil {
 			t.Errorf("closed pane resurrected by the sweep: %v", st[pane])
+		}
+	})
+}
+
+func TestClosingATabForgetsEveryAsleepPaneInIt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		const other, open = "w1:p2", "w1:p3"
+		addPane(h, other, 5151)
+		addPane(h, open, 5252)
+		putAsleep(t, s)
+		captures, _ := filepath.Glob(filepath.Join(s.CaptureDir, "*"))
+		if len(captures) != 3 {
+			t.Fatalf("captures = %q, want three", captures)
+		}
+
+		forgetClosed(t, h, s, pane, other) // their tab closed: no pane.closed
+
+		st := readState(t, s)
+		if st[pane] != nil || st[other] != nil {
+			t.Errorf("closed panes still in state: %v", st)
+		}
+		if st[open]["asleep_at"] == nil {
+			t.Errorf("pane still open was forgotten: %v", st[open])
+		}
+		left, _ := filepath.Glob(filepath.Join(s.CaptureDir, "*"))
+		if len(left) != 1 {
+			t.Errorf("captures left = %q, want only the open pane's", left)
+		}
+	})
+}
+
+func TestForgetClosedKeepsEverythingWhenHerdrCannotListPanes(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		putAsleep(t, s)
+		capture := recordCapture(t, s, pane)
+		h.listErr = herdr.ErrUnreachable
+
+		if err := s.ForgetClosed(t.Context()); !errors.Is(err, herdr.ErrUnreachable) {
+			t.Errorf("err = %v, want herdr unreachable", err)
+		}
+		if st := readState(t, s); st[pane] == nil {
+			t.Error("state entry dropped while herdr was unreachable")
+		}
+		if _, err := os.Stat(capture); err != nil {
+			t.Errorf("capture removed while herdr was unreachable: %v", err)
 		}
 	})
 }
