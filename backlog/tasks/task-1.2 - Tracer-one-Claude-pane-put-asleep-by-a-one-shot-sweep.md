@@ -1,10 +1,11 @@
 ---
 id: TASK-1.2
 title: 'Tracer: one Claude pane put asleep by a one-shot sweep'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-27 09:06'
-updated_date: '2026-10-27 09:20'
+updated_date: '2026-10-27 09:21'
 labels:
   - ready-for-agent
 dependencies:
