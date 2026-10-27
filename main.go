@@ -41,9 +41,6 @@ Usage:
   herdr-idle version       Print the version
 `
 
-// pluginID must match the id in herdr-plugin.toml.
-const pluginID = "dnzzl.idle"
-
 // errUsage means the command line was wrong; usage has been printed.
 var errUsage = errors.New("usage")
 
@@ -77,28 +74,9 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdin i
 	case len(args) == 1 && args[0] == "daemon":
 		return runDaemon(ctx, getenv, stdout)
 	case len(args) == 1 && args[0] == "preview":
-		s, err := newSweeper(getenv)
-		if err != nil {
-			return err
-		}
-		outcomes, err := s.Preview(ctx)
-		printOutcomes(stdout, outcomes, err)
-		return err
+		return runPreview(ctx, getenv, false, stdin, stdout)
 	case len(args) == 2 && args[0] == "preview" && args[1] == "--hold":
-		// An overlay pane closes with its command: keep it open until the
-		// user has read it.
-		s, err := newSweeper(getenv)
-		if err == nil {
-			var outcomes []sweep.Outcome
-			outcomes, err = s.Preview(ctx)
-			printOutcomes(stdout, outcomes, err)
-		}
-		if err != nil {
-			fmt.Fprintln(stdout, "\nherdr-idle:", err)
-		}
-		fmt.Fprint(stdout, "\nPress Enter to close.")
-		_, _ = bufio.NewReader(stdin).ReadString('\n')
-		return nil
+		return runPreview(ctx, getenv, true, stdin, stdout)
 	case len(args) == 1 && args[0] == "config":
 		return editConfig(ctx, getenv, stdin, stdout)
 	case len(args) == 1 && args[0] == "pane-closed":
@@ -108,12 +86,29 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdin i
 	}
 }
 
-func newSweeper(getenv func(string) string) (sweep.Sweeper, error) {
-	socket := getenv("HERDR_SOCKET_PATH")
-	if socket == "" {
-		return sweep.Sweeper{}, errors.New("HERDR_SOCKET_PATH is not set: run inside herdr")
+// runPreview prints what a sweep would do. With hold, it waits for Enter
+// and reports any error on screen: an overlay pane closes with its command,
+// so it stays open until the user has read it.
+func runPreview(ctx context.Context, getenv func(string) string, hold bool, stdin io.Reader, stdout io.Writer) error {
+	s, err := newSweeper(getenv)
+	if err == nil {
+		var outcomes []sweep.Outcome
+		outcomes, err = s.Preview(ctx)
+		printOutcomes(stdout, outcomes, err)
 	}
-	stateDir, err := stateDir(getenv)
+	if !hold {
+		return err
+	}
+	if err != nil {
+		fmt.Fprintln(stdout, "\nherdr-idle:", err)
+	}
+	fmt.Fprint(stdout, "\nPress Enter to close.")
+	_, _ = bufio.NewReader(stdin).ReadString('\n')
+	return nil
+}
+
+func newSweeper(getenv func(string) string) (sweep.Sweeper, error) {
+	socket, statePath, err := sessionPaths(getenv)
 	if err != nil {
 		return sweep.Sweeper{}, err
 	}
@@ -125,11 +120,25 @@ func newSweeper(getenv func(string) string) (sweep.Sweeper, error) {
 		Herdr:     herdr.New(socket),
 		Signaler:  groupSignaler{},
 		Processes: psProcesses{},
-		StatePath: filepath.Join(stateDir, stateFile(socket)),
+		StatePath: statePath,
 		// Screens saved before sleep, one directory per session like the state.
-		CaptureDir: filepath.Join(stateDir, strings.TrimSuffix(stateFile(socket), ".json")+"-screens"),
+		CaptureDir: strings.TrimSuffix(statePath, ".json") + "-screens",
 		Config:     &config.File{Path: cfgPath},
 	}, nil
+}
+
+// sessionPaths returns the herdr session's socket and the plugin's state
+// file for that session.
+func sessionPaths(getenv func(string) string) (socket, statePath string, err error) {
+	socket = getenv("HERDR_SOCKET_PATH")
+	if socket == "" {
+		return "", "", errors.New("HERDR_SOCKET_PATH is not set: run inside herdr")
+	}
+	dir, err := stateDir(getenv)
+	if err != nil {
+		return "", "", err
+	}
+	return socket, filepath.Join(dir, stateFile(socket)), nil
 }
 
 // runDaemon is herdr's startup hook, run on every server start. A second
@@ -237,7 +246,7 @@ func configPath(getenv func(string) string) (string, error) {
 			}
 			base = filepath.Join(home, ".config")
 		}
-		dir = filepath.Join(base, "herdr", "plugins", "config", pluginID)
+		dir = filepath.Join(base, "herdr", "plugins", "config", sweep.PluginID)
 	}
 	return filepath.Join(dir, "config.toml"), nil
 }
@@ -245,20 +254,16 @@ func configPath(getenv func(string) string) (string, error) {
 // runPaneClosed is herdr's pane.closed hook: herdr passes the closed pane in
 // HERDR_PANE_ID.
 func runPaneClosed(ctx context.Context, getenv func(string) string) error {
-	socket := getenv("HERDR_SOCKET_PATH")
-	if socket == "" {
-		return errors.New("HERDR_SOCKET_PATH is not set: run inside herdr")
+	_, statePath, err := sessionPaths(getenv)
+	if err != nil {
+		return err
 	}
 	paneID := getenv("HERDR_PANE_ID")
 	if paneID == "" {
 		return errors.New("HERDR_PANE_ID is not set: run from herdr's pane.closed hook")
 	}
-	stateDir, err := stateDir(getenv)
-	if err != nil {
-		return err
-	}
-	s := sweep.Sweeper{StatePath: filepath.Join(stateDir, stateFile(socket))}
-	return s.PaneClosed(ctx, paneID)
+	s := sweep.Sweeper{StatePath: statePath}
+	return s.PaneClosed(ctx, herdr.PaneID(paneID))
 }
 
 // stateDir is the plugin state directory herdr hands its plugin commands, or
@@ -275,7 +280,7 @@ func stateDir(getenv func(string) string) (string, error) {
 		}
 		base = filepath.Join(home, ".local", "state")
 	}
-	return filepath.Join(base, "herdr", "plugins", pluginID), nil
+	return filepath.Join(base, "herdr", "plugins", sweep.PluginID), nil
 }
 
 // stateFile names one state file per herdr session: pane ids are only

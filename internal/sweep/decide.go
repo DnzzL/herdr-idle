@@ -15,7 +15,7 @@ func whyAwake(a herdr.Agent, ps paneState, now time.Time, cfg config.Config) str
 	if !ps.AsleepAt.IsZero() {
 		return "asleep"
 	}
-	if cfg.Excludes(a.PaneID) || (a.Session != nil && cfg.Excludes(a.Session.Value)) {
+	if cfg.Excludes(string(a.PaneID)) || (a.Session != nil && cfg.Excludes(a.Session.Value)) {
 		return "excluded"
 	}
 	if ps.stopping() && ps.TermIgnored {
@@ -27,12 +27,12 @@ func whyAwake(a herdr.Agent, ps paneState, now time.Time, cfg config.Config) str
 	if a.Focused {
 		return "focused"
 	}
-	if a.Status != "idle" && a.Status != "done" {
-		return "agent is " + a.Status
+	if a.Status != herdr.StatusIdle && a.Status != herdr.StatusDone {
+		return "agent is " + string(a.Status)
 	}
 	r, ok := recipes[a.Agent]
 	if !ok {
-		return "no resume recipe for " + a.Agent
+		return "no resume recipe for " + string(a.Agent)
 	}
 	if a.Session == nil || a.Session.Agent != a.Agent || !slices.Contains(r.refKinds, a.Session.Kind) || a.Session.Value == "" {
 		return "no session ref"

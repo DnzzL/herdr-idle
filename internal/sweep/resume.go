@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/DnzzL/herdr-idle/internal/herdr"
 )
 
 // arity is how many values an option takes on the command line.
@@ -46,7 +48,7 @@ type recipe struct {
 // original options minus the ones the recipe drops. It reports false when
 // the kind has no recipe, ref cannot be resumed, or argv does not run that
 // kind's command.
-func resumeArgv(kind string, argv []string, ref string) ([]string, bool) {
+func resumeArgv(kind herdr.Kind, argv []string, ref string) ([]string, bool) {
 	r, ok := recipes[kind]
 	if !ok {
 		return nil, false

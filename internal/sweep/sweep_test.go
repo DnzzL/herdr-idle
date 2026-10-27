@@ -33,23 +33,23 @@ const (
 type fakeHerdr struct {
 	mu     sync.Mutex // sweeps may run side by side
 	agents []herdr.Agent
-	procs  map[string]herdr.ProcessInfo
-	exitAt map[string]time.Time // pane → when its terminated agent is gone
+	procs  map[herdr.PaneID]herdr.ProcessInfo
+	exitAt map[herdr.PaneID]time.Time // pane → when its terminated agent is gone
 	// shellOnly panes run no agent at all: herdr lists them only while a
 	// plugin report holds them.
-	shellOnly map[string]bool
+	shellOnly map[herdr.PaneID]bool
 	// shellFreeAt is when a pane's shell takes the foreground back.
-	shellFreeAt map[string]time.Time
+	shellFreeAt map[herdr.PaneID]time.Time
 	events      []string
 	reports     []herdr.AgentReport
 	meta        []herdr.MetadataReport
 	// typed is everything sent to each pane's terminal, in order; a line
 	// run with Enter (a command, not a prefill) lands only here.
-	typed map[string][]string
+	typed map[herdr.PaneID][]string
 	// children is the OS side: each pid's child processes, whatever their
 	// process group.
 	children map[int][]herdr.Process
-	screens  map[string]string // pane → its recent screen text
+	screens  map[herdr.PaneID]string // pane → its recent screen text
 	readErr  error
 	// ignoreTERM lists process groups that survive SIGTERM.
 	ignoreTERM map[int]bool
@@ -63,7 +63,7 @@ type fakeHerdr struct {
 	sendErr error
 }
 
-func (f *fakeHerdr) ReadRecent(_ context.Context, paneID string) (string, error) {
+func (f *fakeHerdr) ReadRecent(_ context.Context, paneID herdr.PaneID) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.screens[paneID], f.readErr
@@ -90,7 +90,7 @@ func (f *fakeHerdr) Snapshot(context.Context) ([]herdr.Agent, error) {
 	return out, nil
 }
 
-func (f *fakeHerdr) lastReport(paneID string) (herdr.AgentReport, bool) {
+func (f *fakeHerdr) lastReport(paneID herdr.PaneID) (herdr.AgentReport, bool) {
 	for _, r := range slices.Backward(f.reports) {
 		if r.PaneID == paneID {
 			return r, true
@@ -99,12 +99,12 @@ func (f *fakeHerdr) lastReport(paneID string) (herdr.AgentReport, bool) {
 	return herdr.AgentReport{}, false
 }
 
-func (f *fakeHerdr) herdrNoticedExit(paneID string) bool {
+func (f *fakeHerdr) herdrNoticedExit(paneID herdr.PaneID) bool {
 	at, ok := f.exitAt[paneID]
 	return ok && !time.Now().Before(at.Add(herdrLag))
 }
 
-func (f *fakeHerdr) ProcessInfo(_ context.Context, paneID string) (herdr.ProcessInfo, error) {
+func (f *fakeHerdr) ProcessInfo(_ context.Context, paneID herdr.PaneID) (herdr.ProcessInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	p, ok := f.procs[paneID]
@@ -120,7 +120,7 @@ func (f *fakeHerdr) ProcessInfo(_ context.Context, paneID string) (herdr.Process
 	return p, nil
 }
 
-func (f *fakeHerdr) agentGone(paneID string) bool {
+func (f *fakeHerdr) agentGone(paneID herdr.PaneID) bool {
 	at, ok := f.exitAt[paneID]
 	return ok && !time.Now().Before(at)
 }
@@ -131,7 +131,7 @@ func (f *fakeHerdr) ReportAgent(_ context.Context, r herdr.AgentReport) error {
 	if _, ok := f.exitAt[r.PaneID]; ok && !f.herdrNoticedExit(r.PaneID) {
 		return nil // accepted, then wiped when the detector catches up
 	}
-	f.events = append(f.events, "report_agent "+r.PaneID)
+	f.events = append(f.events, "report_agent "+string(r.PaneID))
 	if !f.dropReports {
 		f.reports = append(f.reports, r)
 	}
@@ -141,12 +141,12 @@ func (f *fakeHerdr) ReportAgent(_ context.Context, r herdr.AgentReport) error {
 func (f *fakeHerdr) ReportMetadata(_ context.Context, r herdr.MetadataReport) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.events = append(f.events, "report_metadata "+r.PaneID)
+	f.events = append(f.events, "report_metadata "+string(r.PaneID))
 	f.meta = append(f.meta, r)
 	return nil
 }
 
-func (f *fakeHerdr) SendText(_ context.Context, paneID, text string) error {
+func (f *fakeHerdr) SendText(_ context.Context, paneID herdr.PaneID, text string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.sendErr != nil {
@@ -160,7 +160,7 @@ func (f *fakeHerdr) SendText(_ context.Context, paneID, text string) error {
 	if strings.HasSuffix(text, "\r") {
 		return nil
 	}
-	f.events = append(f.events, "send_text "+paneID+" "+text)
+	f.events = append(f.events, "send_text "+string(paneID)+" "+text)
 	return nil
 }
 
@@ -226,11 +226,11 @@ func newWorld(t *testing.T, a herdr.Agent, p herdr.ProcessInfo) (*fakeHerdr, swe
 	t.Helper()
 	h := &fakeHerdr{
 		agents:       []herdr.Agent{a},
-		procs:        map[string]herdr.ProcessInfo{a.PaneID: p},
-		exitAt:       map[string]time.Time{},
-		typed:        map[string][]string{},
+		procs:        map[herdr.PaneID]herdr.ProcessInfo{a.PaneID: p},
+		exitAt:       map[herdr.PaneID]time.Time{},
+		typed:        map[herdr.PaneID][]string{},
 		children:     map[int][]herdr.Process{},
-		screens:      map[string]string{},
+		screens:      map[herdr.PaneID]string{},
 		captureDir:   filepath.Join(t.TempDir(), "captures"),
 		onDiskAtTerm: map[string]string{},
 	}
@@ -454,9 +454,9 @@ func TestEveryResumableKindIsPrefilledWithItsRecipe(t *testing.T) {
 		t.Run(tt.kind+" "+tt.want, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				a, p := claudePane(tt.argv...)
-				a.Agent = tt.kind
+				a.Agent = herdr.Kind(tt.kind)
 				a.Session = &herdr.AgentSession{
-					Source: "herdr:" + tt.kind, Agent: tt.kind, Kind: tt.refKind, Value: tt.ref,
+					Source: "herdr:" + tt.kind, Agent: herdr.Kind(tt.kind), Kind: tt.refKind, Value: tt.ref,
 				}
 				h, s := newWorld(t, a, p)
 				putAsleep(t, s)
@@ -585,7 +585,7 @@ func TestUnrecognisedCommandLineIsLeftAlone(t *testing.T) {
 // wake is the user pressing Enter on the asleep pane: the agent runs again
 // under its own kind, and herdr drops the stand-in report a few seconds
 // later.
-func (f *fakeHerdr) wake(paneID string) {
+func (f *fakeHerdr) wake(paneID herdr.PaneID) {
 	delete(f.exitAt, paneID)
 	f.reports = slices.DeleteFunc(f.reports, func(r herdr.AgentReport) bool { return r.PaneID == paneID })
 }
@@ -682,14 +682,14 @@ func TestClosingAnotherPaneLeavesAsleepPaneAlone(t *testing.T) {
 
 // recordCapture writes a capture file for the pane and points its state
 // entry at it, as putting a pane asleep does once screens are captured.
-func recordCapture(t *testing.T, s sweep.Sweeper, paneID string) string {
+func recordCapture(t *testing.T, s sweep.Sweeper, paneID herdr.PaneID) string {
 	t.Helper()
 	capture := filepath.Join(filepath.Dir(s.StatePath), "capture.txt")
 	if err := os.WriteFile(capture, []byte("screen"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	st := readState(t, s)
-	st[paneID]["capture_path"] = capture
+	st[string(paneID)]["capture_path"] = capture
 	b, err := json.Marshal(st)
 	if err != nil {
 		t.Fatal(err)
@@ -1105,12 +1105,12 @@ func TestClosingAWokenPaneRemovesItsScreenCapture(t *testing.T) {
 
 // restart is a herdr server restart: every plugin report and label is gone,
 // the pane comes back as a fresh shell (new pid) and nothing is resumed.
-func (f *fakeHerdr) restart(paneID string) {
+func (f *fakeHerdr) restart(paneID herdr.PaneID) {
 	f.reports = slices.DeleteFunc(f.reports, func(r herdr.AgentReport) bool { return r.PaneID == paneID })
 	f.meta = nil
 	f.procs[paneID] = herdr.ProcessInfo{ShellPID: shellPID + 1, ForegroundGroupID: shellPID + 1}
 	delete(f.exitAt, paneID)
-	f.shellOnly = map[string]bool{paneID: true}
+	f.shellOnly = map[herdr.PaneID]bool{paneID: true}
 }
 
 func TestRearmAfterHerdrRestartRelistsAndPrefillsWithoutStartingTheAgent(t *testing.T) {
@@ -1174,7 +1174,7 @@ func TestRearmWaitsForTheShellPrompt(t *testing.T) {
 		// The restored shell is still starting: its rc file owns the
 		// terminal for a few seconds.
 		h.procs[pane] = herdr.ProcessInfo{ShellPID: shellPID + 1, ForegroundGroupID: 777}
-		h.shellFreeAt = map[string]time.Time{pane: time.Now().Add(3 * time.Second)}
+		h.shellFreeAt = map[herdr.PaneID]time.Time{pane: time.Now().Add(3 * time.Second)}
 		h.events = nil
 		run(t, s)
 		want := "send_text " + pane + " claude --resume " + sessionID
@@ -1211,7 +1211,7 @@ func TestRearmLeavesABusyShellForALaterSweep(t *testing.T) {
 
 // addPane adds a second quiet claude pane to the world, its agent in group
 // pgid.
-func addPane(h *fakeHerdr, id string, pgid int) {
+func addPane(h *fakeHerdr, id herdr.PaneID, pgid int) {
 	a, p := claudePane("claude")
 	a.PaneID = id
 	p.ForegroundGroupID = pgid

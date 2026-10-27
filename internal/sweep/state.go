@@ -16,16 +16,16 @@ import (
 type paneState struct {
 	// Quiet clock: herdr has no timestamp for a state change, so the sweep
 	// notes when it first saw the current seq and status.
-	LastChangeSeq uint64    `json:"last_change_seq"`
-	LastStatus    string    `json:"last_status"`
-	LastChangeAt  time.Time `json:"last_change_at"`
+	LastChangeSeq uint64       `json:"last_change_seq"`
+	LastStatus    herdr.Status `json:"last_status"`
+	LastChangeAt  time.Time    `json:"last_change_at"`
 
 	// Saved before the agent is sent SIGTERM, at StoppedAt: what resumes it.
-	Kind       string    `json:"kind,omitempty"`
-	SessionRef string    `json:"session_ref,omitempty"`
-	ResumeArgv []string  `json:"resume_argv,omitempty"`
-	Cwd        string    `json:"cwd,omitempty"`
-	StoppedAt  time.Time `json:"stopped_at,omitzero"`
+	Kind       herdr.Kind `json:"kind,omitempty"`
+	SessionRef string     `json:"session_ref,omitempty"`
+	ResumeArgv []string   `json:"resume_argv,omitempty"`
+	Cwd        string     `json:"cwd,omitempty"`
+	StoppedAt  time.Time  `json:"stopped_at,omitzero"`
 	// TermIgnored is set when the agent outlived SIGTERM; it is not
 	// signalled again until its state changes.
 	TermIgnored bool `json:"term_ignored,omitempty"`
@@ -56,7 +56,7 @@ func (ps paneState) prefill() string {
 }
 
 // state maps pane id to that pane's state.
-type state map[string]paneState
+type state map[herdr.PaneID]paneState
 
 // observe returns the state for this snapshot. Asleep and stopping panes
 // are kept, even when herdr no longer lists them. Every other agent pane

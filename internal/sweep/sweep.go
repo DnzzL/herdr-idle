@@ -23,12 +23,12 @@ import (
 // Herdr is the part of herdr's API a sweep uses.
 type Herdr interface {
 	Snapshot(ctx context.Context) ([]herdr.Agent, error)
-	ProcessInfo(ctx context.Context, paneID string) (herdr.ProcessInfo, error)
+	ProcessInfo(ctx context.Context, paneID herdr.PaneID) (herdr.ProcessInfo, error)
 	// ReadRecent returns the pane's recent screen as plain text.
-	ReadRecent(ctx context.Context, paneID string) (string, error)
+	ReadRecent(ctx context.Context, paneID herdr.PaneID) (string, error)
 	ReportAgent(ctx context.Context, r herdr.AgentReport) error
 	ReportMetadata(ctx context.Context, r herdr.MetadataReport) error
-	SendText(ctx context.Context, paneID, text string) error
+	SendText(ctx context.Context, paneID herdr.PaneID, text string) error
 }
 
 // Signaler stops processes.
@@ -64,8 +64,8 @@ type Sweeper struct {
 
 // Outcome is what a sweep decided for one agent pane.
 type Outcome struct {
-	PaneID string
-	Agent  string
+	PaneID herdr.PaneID
+	Agent  herdr.Kind
 	Asleep bool   // put asleep by this sweep
 	Reason string // why it was or was not put asleep
 }
@@ -259,7 +259,7 @@ func (s Sweeper) settle(ctx context.Context) ([]Outcome, error) {
 		return nil, err
 	}
 	todo := state{}
-	listed := map[string]bool{}
+	listed := map[herdr.PaneID]bool{}
 	for id, ps := range st {
 		if ps.stopping() {
 			todo[id] = ps
@@ -329,7 +329,7 @@ func (s Sweeper) settle(ctx context.Context) ([]Outcome, error) {
 // its screen was saved and prefills the resume command. It returns the
 // pane's new state and an outcome, whose Reason is empty when nothing
 // changed.
-func (s Sweeper) settlePane(ctx context.Context, paneID string, ps paneState, deadline time.Time) (paneState, Outcome, error) {
+func (s Sweeper) settlePane(ctx context.Context, paneID herdr.PaneID, ps paneState, deadline time.Time) (paneState, Outcome, error) {
 	o := Outcome{PaneID: paneID, Agent: ps.Kind}
 	shell, err := s.waitForShell(ctx, paneID, deadline)
 	if herr, ok := errors.AsType[*herdr.Error](err); ok && herr.Code == "pane_not_found" {
@@ -397,7 +397,7 @@ func (s Sweeper) settlePane(ctx context.Context, paneID string, ps paneState, de
 // PaneClosed forgets a pane herdr has closed: its state entry and its capture
 // file are removed. An unknown pane is not an error. It waits for no agent
 // to exit, only for the state file to be free.
-func (s Sweeper) PaneClosed(ctx context.Context, paneID string) error {
+func (s Sweeper) PaneClosed(ctx context.Context, paneID herdr.PaneID) error {
 	unlock, err := lockState(ctx, s.StatePath)
 	if err != nil {
 		return err
@@ -422,7 +422,7 @@ func (s Sweeper) PaneClosed(ctx context.Context, paneID string) error {
 
 // capture saves the pane's recent screen to its file in CaptureDir and
 // returns the file's path.
-func (s Sweeper) capture(ctx context.Context, paneID string) (string, error) {
+func (s Sweeper) capture(ctx context.Context, paneID herdr.PaneID) (string, error) {
 	text, err := s.Herdr.ReadRecent(ctx, paneID)
 	if err != nil {
 		return "", err
@@ -439,14 +439,14 @@ func (s Sweeper) capture(ctx context.Context, paneID string) (string, error) {
 
 // capturePath is the pane's capture file. Pane ids look like w1:p2; keep
 // file names portable.
-func (s Sweeper) capturePath(paneID string) string {
-	return filepath.Join(s.CaptureDir, strings.ReplaceAll(paneID, ":", "-")+".txt")
+func (s Sweeper) capturePath(paneID herdr.PaneID) string {
+	return filepath.Join(s.CaptureDir, strings.ReplaceAll(string(paneID), ":", "-")+".txt")
 }
 
 // waitForShell polls until the pane's shell owns the terminal again, so the
 // prefill lands at its prompt instead of in the exiting agent, and returns
 // the shell's pid. It returns 0 if that has not happened by deadline.
-func (s Sweeper) waitForShell(ctx context.Context, paneID string, deadline time.Time) (int, error) {
+func (s Sweeper) waitForShell(ctx context.Context, paneID herdr.PaneID, deadline time.Time) (int, error) {
 	for {
 		info, err := s.Herdr.ProcessInfo(ctx, paneID)
 		if err != nil {
@@ -466,10 +466,10 @@ func (s Sweeper) waitForShell(ctx context.Context, paneID string, deadline time.
 
 // reportAsleep reports the pane under the stand-in kind until herdr still
 // lists it reportSettle later, or deadline passes.
-func (s Sweeper) reportAsleep(ctx context.Context, paneID string, deadline time.Time) (bool, error) {
+func (s Sweeper) reportAsleep(ctx context.Context, paneID herdr.PaneID, deadline time.Time) (bool, error) {
 	for {
 		if err := s.Herdr.ReportAgent(ctx, herdr.AgentReport{
-			PaneID: paneID, Source: PluginID, Agent: standInKind, State: "idle",
+			PaneID: paneID, Source: PluginID, Agent: standInKind, State: herdr.StatusIdle,
 		}); err != nil {
 			return false, err
 		}

@@ -170,7 +170,7 @@ func TestSecondDaemonForTheSameSessionExitsWithoutSweeping(t *testing.T) {
 		synctest.Wait()
 
 		// The second daemon gets a herdr of its own: anything it does shows.
-		h2 := &fakeHerdr{agents: h.agents, procs: map[string]herdr.ProcessInfo{pane: p}, exitAt: map[string]time.Time{}}
+		h2 := &fakeHerdr{agents: h.agents, procs: map[herdr.PaneID]herdr.ProcessInfo{pane: p}, exitAt: map[herdr.PaneID]time.Time{}}
 		s2 := s
 		s2.Herdr, s2.Signaler = h2, &fakeSignaler{h: h2}
 		s2.Config = &config.File{Path: filepath.Join(t.TempDir(), "config.toml")}
