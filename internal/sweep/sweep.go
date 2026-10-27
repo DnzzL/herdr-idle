@@ -361,7 +361,7 @@ func (s Sweeper) settlePane(ctx context.Context, paneID herdr.PaneID, ps paneSta
 		Source:          PluginID,
 		AppliesToSource: PluginID,
 		DisplayAgent:    ps.Kind,
-		StateLabels:     map[string]string{"idle": "asleep"},
+		StateLabels:     map[string]string{string(herdr.StatusUnknown): "asleep"},
 	}); err != nil {
 		return ps, o, err
 	}
@@ -369,10 +369,13 @@ func (s Sweeper) settlePane(ctx context.Context, paneID herdr.PaneID, ps paneSta
 	// herdr restart) has lost it, and its scrollback with the notice.
 	if ps.PrefilledShell != shell {
 		if ps.CapturePath != "" {
-			// Run with Enter before the prefill, so the prefill stays
-			// editable at the next prompt. The leading space keeps it out
+			// Show the saved screen, so the pane still tells which
+			// conversation it holds, then where it is saved. Run with
+			// Enter before the prefill, so the prefill stays editable at
+			// the next prompt. The leading space keeps it out
 			// of shell history where the shell honours that.
-			notice := " " + shellJoin([]string{"echo", "herdr-idle: screen saved to " + ps.CapturePath}) + "\r"
+			notice := " " + shellJoin([]string{"cat", ps.CapturePath}) + "; " +
+				shellJoin([]string{"echo", "herdr-idle: screen saved to " + ps.CapturePath}) + "\r"
 			if err := s.Herdr.SendText(ctx, paneID, notice); err != nil {
 				return ps, o, err
 			}
@@ -465,11 +468,13 @@ func (s Sweeper) waitForShell(ctx context.Context, paneID herdr.PaneID, deadline
 }
 
 // reportAsleep reports the pane under the stand-in kind until herdr still
-// lists it reportSettle later, or deadline passes.
+// lists it reportSettle later, or deadline passes. State unknown ranks
+// last in herdr's priority-sorted agent list: a sleeping agent needs no
+// attention.
 func (s Sweeper) reportAsleep(ctx context.Context, paneID herdr.PaneID, deadline time.Time) (bool, error) {
 	for {
 		if err := s.Herdr.ReportAgent(ctx, herdr.AgentReport{
-			PaneID: paneID, Source: PluginID, Agent: standInKind, State: herdr.StatusIdle,
+			PaneID: paneID, Source: PluginID, Agent: standInKind, State: herdr.StatusUnknown,
 		}); err != nil {
 			return false, err
 		}

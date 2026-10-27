@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-27 09:00'
-updated_date: '2026-10-27 10:14'
+updated_date: '2026-10-27 16:58'
 labels:
   - ready-for-agent
 dependencies: []
@@ -196,4 +196,6 @@ After a herdr restart, scrollback is gone: the capture file is the only record (
 Spec update after code review: no standalone `rearm` subcommand — rearm runs inside the daemon (each sweep + every 30s check). Process facts come from pane.process_info plus `ps` for the agent direct children (Claude runs tools in its own process group, invisible to herdr); supersedes "No /proc, ps or lsof".
 
 Code review (standards + spec) done; fixes merged (ea6914d): resume argv/ref/cwd persisted before SIGTERM, post-signal settle unlocked under WithoutCancel, prefill typed once per shell pid, cd <cwd> in prefill, capture kept through wake, fsync state, typed PaneID/Kind/Status, single PluginID. Residual: PaneClosed can still block on a hung herdr during the short locked phase; capture notice may be retyped if prefill failed.
+
+2026-10-27 dogfood feedback (user): (1) asleep pane gave no clue which conversation it held → notice now cats the screen capture before the path. (2) asleep panes sorted to the top of the priority sidebar (newest state change in the idle group) → stand-in now reported state unknown with label unknown=asleep, which ranks last. ADR-0001 amended. Metadata title rejected: herdr's default sidebar rows show no title token.
 <!-- SECTION:NOTES:END -->

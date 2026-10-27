@@ -4,6 +4,7 @@ title: 'Manual: real asleep → resume per installed kind'
 status: To Do
 assignee: []
 created_date: '2026-10-27 09:07'
+updated_date: '2026-10-27 13:39'
 labels:
   - ready-for-human
 dependencies:
@@ -28,3 +29,9 @@ On the maintainer machine, for each installed kind with a herdr integration (cur
 - [ ] #1 claude, pi, droid and opencode each complete asleep → herdr restart → Enter with the same session and original flags
 - [ ] #2 README supported-kinds table marks each passing kind verified; failures are filed as bugs
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-27: claude verified in live dogfood (3 panes slept, Enter resumed same session). Remaining: pi, droid, opencode.
+<!-- SECTION:NOTES:END -->

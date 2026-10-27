@@ -1,11 +1,11 @@
 ---
 id: TASK-1.2
 title: 'Tracer: one Claude pane put asleep by a one-shot sweep'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-27 09:06'
-updated_date: '2026-10-27 09:37'
+updated_date: '2026-10-27 13:39'
 labels:
   - ready-for-agent
 dependencies:
@@ -34,7 +34,7 @@ Before code: record the ADR (SIGTERM + plugin-owned resume table, rejected: rely
 - [x] #4 Focused, working/blocked, not-yet-quiet and no-session-ref panes get no action (sweep table tests)
 - [x] #5 Quiet clock starts when a state change is first observed; a fresh state file starts every clock at now
 - [x] #6 Tests run through the sweep seam only and pass with `go test -race -shuffle=on`; vet/staticcheck clean
-- [ ] #7 Manual check on a disposable herdr session: a real Claude pane goes asleep and Enter resumes the same session
+- [x] #7 Manual check on a disposable herdr session: a real Claude pane goes asleep and Enter resumes the same session
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -53,4 +53,12 @@ State file is per herdr session: state-<sha256(socket)[:6]>.json (pane ids are p
 Open: positional prompt on argv (claude "fix X") is kept → replayed on wake. Pending user decision.
 
 Positional prompt decision moved to TASK-1.6 (drop positionals).
+
+2026-10-27 dogfood on live session (canary config, other panes excluded): 3 real claude panes w1Q:p1/p3/p6 put asleep at 14:38 (maki/display claude/asleep, screens saved); user pressed Enter → same conversation resumed. AC7 verified.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Claude tracer: SIGTERM on foreground group, maki stand-in report with asleep label, resume prefilled without Enter. Verified by tests and on 3 real claude panes in live dogfood (Enter resumes same session). Risk: depends on herdr 0.9.5 report timing.
+<!-- SECTION:FINAL_SUMMARY:END -->

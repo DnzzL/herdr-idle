@@ -49,8 +49,9 @@ Then the plugin:
    30 seconds later is left alone, never killed, and not stopped again until
    its state changes; if it exits later, the pane is put asleep at the next
    check;
-3. once the shell is back at its prompt, prints where the screen capture is
-   (an `echo` it runs), then types `cd` to the agent's directory and the
+3. once the shell is back at its prompt, prints the saved screen and where it
+   is (a `cat` and an `echo` it runs), so the pane still shows the end of the
+   conversation; then types `cd` to the agent's directory and the
    resume command on the input line, without pressing Enter. It types them
    once per shell: only a new shell, after a herdr restart, gets them again.
 
@@ -60,7 +61,8 @@ agent; Ctrl+C clears the line and leaves a plain shell. The pane's scrollback
 is still there.
 
 In the sidebar, the pane keeps the agent's name and shows `asleep` instead of
-`idle`. herdr cannot list a pane whose agent has exited under that agent's own
+`idle`. It is reported with state `unknown`, so herdr's priority-sorted agent
+list (`agent_panel_sort = "priority"`) ranks it last, below idle agents. herdr cannot list a pane whose agent has exited under that agent's own
 kind, so the plugin reports it under the stand-in kind `maki`: `herdr agent
 list` and the socket API show asleep panes as agent `maki`, from source
 `dnzzl.idle`. Once you wake the agent, the pane is listed under its real kind
@@ -72,7 +74,7 @@ herdr session. It stops when the plugin is disabled or removed, or herdr stops.
 After a herdr restart, asleep panes stay asleep: within half a minute they come
 back listed as `asleep` and prefilled, and no agent starts on its own. The
 scrollback is gone after a restart; the capture file is then the only record of
-the last screen, and its path is printed again.
+the last screen, and it is printed again.
 
 To make asleep panes stand out, style `state_text` in
 `~/.config/herdr/config.toml`:
@@ -153,8 +155,8 @@ are never put asleep. When herdr adds or changes a kind, this table follows.
 
 - Sends `SIGTERM` to the foreground process group of qualifying agent panes.
   Never `SIGKILL`.
-- Types into those panes' shells: one `echo` of the capture path, run with
-  Enter, then the resume command, without Enter.
+- Types into those panes' shells: one `cat` of the screen capture and `echo` of
+  its path, run with Enter, then the resume command, without Enter.
 - Runs `ps` to see what each candidate agent is running.
 - Writes one state file per herdr session and one screen capture per asleep
   pane in the plugin state directory. Closing a pane deletes its entry and
@@ -163,7 +165,7 @@ are never put asleep. When herdr adds or changes a kind, this table follows.
 
 ## Known gaps
 
-- The capture-path `echo` lands in shell history unless the shell skips lines
+- The `cat`/`echo` line lands in shell history unless the shell skips lines
   starting with a space (zsh `HIST_IGNORE_SPACE`, bash `HISTCONTROL=ignorespace`).
 - After a herdr restart, an asleep pane whose shell is busy (a command typed
   before it was restored as asleep) is restored once the shell is free.

@@ -275,13 +275,13 @@ func TestQuietClaudePaneIsPutAsleep(t *testing.T) {
 		if !slices.Equal(h.events, want) {
 			t.Fatalf("events:\n got %q\nwant %q", h.events, want)
 		}
-		wantReport := herdr.AgentReport{PaneID: pane, Source: "dnzzl.idle", Agent: "maki", State: "idle"}
+		wantReport := herdr.AgentReport{PaneID: pane, Source: "dnzzl.idle", Agent: "maki", State: "unknown"}
 		if h.reports[0] != wantReport {
 			t.Errorf("report_agent = %+v, want %+v", h.reports[0], wantReport)
 		}
 		m := h.meta[0]
 		if m.Source != "dnzzl.idle" || m.AppliesToSource != "dnzzl.idle" ||
-			m.DisplayAgent != "claude" || m.StateLabels["idle"] != "asleep" {
+			m.DisplayAgent != "claude" || m.StateLabels["unknown"] != "asleep" {
 			t.Errorf("report_metadata = %+v", m)
 		}
 		if strings.ContainsAny(h.events[3], "\r\n") {
@@ -988,10 +988,10 @@ func TestScreenIsSavedBeforeSIGTERMAndItsPathShownBeforeThePrefill(t *testing.T)
 		if len(shown) != 2 || shown[1] != "claude --resume "+sessionID+" --model opus" {
 			t.Fatalf("pane %s got %q, want a notice then the prefill", a.PaneID, shown)
 		}
-		notice, ok := strings.CutPrefix(shown[0], " echo 'herdr-idle: screen saved to ")
-		path, ok2 := strings.CutSuffix(notice, "'\r")
-		if !ok || !ok2 {
-			t.Fatalf("notice = %q, want an echo of the capture path, run with Enter", shown[0])
+		notice, ok := strings.CutPrefix(shown[0], " cat ")
+		path, _, ok2 := strings.Cut(notice, ";")
+		if !ok || !ok2 || shown[0] != " cat "+path+"; echo 'herdr-idle: screen saved to "+path+"'\r" {
+			t.Fatalf("notice = %q, want the capture shown then its path, run with Enter", shown[0])
 		}
 		if got, ok := h.onDiskAtTerm[path]; !ok || got != h.screens[a.PaneID] {
 			t.Fatalf("at SIGTERM, %s held %q (exists %v); captures: %q", path, got, ok, h.onDiskAtTerm)
@@ -1141,10 +1141,10 @@ func TestRearmAfterHerdrRestartRelistsAndPrefillsWithoutStartingTheAgent(t *test
 			t.Fatalf("events:\n got %q\nwant %q", h.events, want)
 		}
 		m := h.meta[0]
-		if m.DisplayAgent != "claude" || m.StateLabels["idle"] != "asleep" || m.AppliesToSource != "dnzzl.idle" {
+		if m.DisplayAgent != "claude" || m.StateLabels["unknown"] != "asleep" || m.AppliesToSource != "dnzzl.idle" {
 			t.Errorf("report_metadata = %+v", m)
 		}
-		if r, _ := h.lastReport(pane); r.Agent != "maki" || r.Source != "dnzzl.idle" || r.State != "idle" {
+		if r, _ := h.lastReport(pane); r.Agent != "maki" || r.Source != "dnzzl.idle" || r.State != "unknown" {
 			t.Errorf("report_agent = %+v", r)
 		}
 		if len(out) != 1 || out[0].PaneID != pane || out[0].Agent != "claude" || out[0].Reason != "rearmed" {
@@ -1303,7 +1303,7 @@ func assertAsleepAfterAll(t *testing.T, h *fakeHerdr, prefill string) {
 		t.Errorf("not reported asleep: %+v", h.reports)
 	}
 	typed := h.typed[pane]
-	if len(typed) != 2 || !strings.HasPrefix(typed[0], " echo ") || typed[1] != prefill {
+	if len(typed) != 2 || !strings.HasPrefix(typed[0], " cat ") || typed[1] != prefill {
 		t.Errorf("typed %q, want the notice then %q, once", typed, prefill)
 	}
 }
