@@ -34,7 +34,10 @@ A pane is put asleep when all of these hold:
 - herdr shows its agent `idle` or `done`, with no change for `idle_minutes`;
 - you are not focused on the pane;
 - the agent runs nothing besides its MCP or language servers (no shell, dev
-  server or test run);
+  server or test run). A server is recognised by its program or package name:
+  a word `mcp`, `lsp` or `langserver`, `language-server`,
+  `@modelcontextprotocol/…`, or `gopls`, `rust-analyzer`, `clangd`, `tsserver`,
+  `jdtls`;
 - its kind is in the [supported table](#supported-kinds) and herdr knows its
   session id;
 - it is not in `exclude`.
@@ -43,9 +46,11 @@ Then the plugin:
 
 1. saves the agent's recent screen to a file in the plugin state directory;
 2. stops the agent and its MCP servers with `SIGTERM`. An agent still running
-   30 seconds later is left alone, never killed;
-3. once the shell is back at its prompt, types the resume command on the input
-   line, without pressing Enter, and prints where the screen capture is.
+   30 seconds later is left alone, never killed, and not stopped again until
+   its state changes;
+3. once the shell is back at its prompt, prints where the screen capture is
+   (an `echo` it runs), then types the resume command on the input line,
+   without pressing Enter.
 
 The resume command continues the same session, in the same directory, with the
 flags you started the agent with (permission mode, model…). Enter wakes the
@@ -142,11 +147,20 @@ are never put asleep. When herdr adds or changes a kind, this table follows.
 
 - Sends `SIGTERM` to the foreground process group of qualifying agent panes.
   Never `SIGKILL`.
-- Types into those panes' shells, without pressing Enter.
+- Types into those panes' shells: one `echo` of the capture path, run with
+  Enter, then the resume command, without Enter.
+- Runs `ps` to see what each candidate agent is running.
 - Writes one state file per herdr session and one screen capture per asleep
   pane in the plugin state directory. Closing a pane deletes its entry and
   capture.
 - Edits nothing outside its own config and state directories.
+
+## Known gaps
+
+- The capture-path `echo` lands in shell history unless the shell skips lines
+  starting with a space (zsh `HIST_IGNORE_SPACE`, bash `HISTCONTROL=ignorespace`).
+- Once a woken pane is awake again, its capture file is no longer tracked:
+  closing the pane leaves it behind until the pane sleeps again.
 
 ## Development
 
