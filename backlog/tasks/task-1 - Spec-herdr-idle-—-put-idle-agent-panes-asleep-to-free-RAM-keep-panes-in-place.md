@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-27 09:00'
-updated_date: '2026-10-27 10:02'
+updated_date: '2026-10-27 10:14'
 labels:
   - ready-for-agent
 dependencies: []
@@ -194,4 +194,6 @@ Order when putting asleep: read session ref + argv BEFORE SIGTERM (ref vanishes 
 After a herdr restart, scrollback is gone: the capture file is the only record (weakens US 9/29 across restarts). Upstream requests (placeholder API, agent.resume) not filed.
 
 Spec update after code review: no standalone `rearm` subcommand — rearm runs inside the daemon (each sweep + every 30s check). Process facts come from pane.process_info plus `ps` for the agent direct children (Claude runs tools in its own process group, invisible to herdr); supersedes "No /proc, ps or lsof".
+
+Code review (standards + spec) done; fixes merged (ea6914d): resume argv/ref/cwd persisted before SIGTERM, post-signal settle unlocked under WithoutCancel, prefill typed once per shell pid, cd <cwd> in prefill, capture kept through wake, fsync state, typed PaneID/Kind/Status, single PluginID. Residual: PaneClosed can still block on a hung herdr during the short locked phase; capture notice may be retyped if prefill failed.
 <!-- SECTION:NOTES:END -->
