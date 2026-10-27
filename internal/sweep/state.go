@@ -19,43 +19,69 @@ type paneState struct {
 	LastChangeSeq uint64    `json:"last_change_seq"`
 	LastStatus    string    `json:"last_status"`
 	LastChangeAt  time.Time `json:"last_change_at"`
-	// TermIgnored is set when the agent outlived SIGTERM; it is not
-	// signalled again until its state changes.
-	TermIgnored bool `json:"term_ignored,omitempty"`
 
-	// Set once the pane is asleep.
+	// Saved before the agent is sent SIGTERM, at StoppedAt: what resumes it.
 	Kind       string    `json:"kind,omitempty"`
 	SessionRef string    `json:"session_ref,omitempty"`
 	ResumeArgv []string  `json:"resume_argv,omitempty"`
-	AsleepAt   time.Time `json:"asleep_at,omitzero"`
+	Cwd        string    `json:"cwd,omitempty"`
+	StoppedAt  time.Time `json:"stopped_at,omitzero"`
+	// TermIgnored is set when the agent outlived SIGTERM; it is not
+	// signalled again until its state changes.
+	TermIgnored bool `json:"term_ignored,omitempty"`
+	// AsleepAt is set once the agent is gone and the pane reported asleep.
+	AsleepAt time.Time `json:"asleep_at,omitzero"`
+	// PrefilledShell is the pid of the shell last prefilled: a herdr
+	// restart brings a new shell, which needs the prefill again.
+	PrefilledShell int `json:"prefilled_shell,omitempty"`
 	// CapturePath is the file holding the pane's screen from before it was
-	// put asleep; it goes when the pane is closed.
+	// last put asleep; it goes when the pane is closed.
 	CapturePath string `json:"capture_path,omitempty"`
+}
+
+// stopping reports whether the pane's agent was sent SIGTERM and the pane
+// is not asleep yet: it is put asleep once the agent is gone.
+func (ps paneState) stopping() bool {
+	return !ps.StoppedAt.IsZero() && ps.AsleepAt.IsZero()
+}
+
+// prefill is the command line typed at the pane's prompt: back to the
+// agent's directory, then its resume command.
+func (ps paneState) prefill() string {
+	cmd := shellJoin(ps.ResumeArgv)
+	if ps.Cwd == "" {
+		return cmd
+	}
+	return "cd " + shellQuote(ps.Cwd) + " && " + cmd
 }
 
 // state maps pane id to that pane's state.
 type state map[string]paneState
 
-// observe returns the state for this snapshot: asleep panes are kept as they
-// are, even when herdr no longer lists them; every other agent pane keeps its
-// clock while its seq and status hold, and starts it at now when they change
-// or when the pane is new. An asleep pane listed under a real kind again was
-// woken: herdr has dropped the stand-in report, so it is awake again with a
-// clock starting now. Other panes no longer in the snapshot are forgotten.
+// observe returns the state for this snapshot. Asleep and stopping panes
+// are kept, even when herdr no longer lists them. Every other agent pane
+// keeps its clock while its seq and status hold, and starts it at now when
+// they change or when the pane is new. An asleep pane listed under a real
+// kind again was woken: herdr has dropped the stand-in report, so it is
+// awake again with a clock starting now. A stopping pane listed under its
+// kind still runs its agent: it stays stopping until the agent exits, unless
+// the agent ignored SIGTERM and has changed state since. Other panes no
+// longer in the snapshot are forgotten.
 func observe(prev state, agents []herdr.Agent, now time.Time) state {
 	next := state{}
 	for id, ps := range prev {
-		if !ps.AsleepAt.IsZero() {
+		if !ps.StoppedAt.IsZero() || !ps.AsleepAt.IsZero() {
 			next[id] = ps
 		}
 	}
 	for _, a := range agents {
 		ps, seen := prev[a.PaneID]
-		woken := !ps.AsleepAt.IsZero()
-		if woken && a.Agent == standInKind {
-			continue // still asleep
+		asleep := !ps.AsleepAt.IsZero()
+		if a.Agent == standInKind && (asleep || ps.stopping()) {
+			continue // ours
 		}
-		if woken || !seen || ps.LastChangeSeq != a.StateChangeSeq || ps.LastStatus != a.Status {
+		changed := !seen || ps.LastChangeSeq != a.StateChangeSeq || ps.LastStatus != a.Status
+		if asleep || changed && (!ps.stopping() || ps.TermIgnored) {
 			// The capture outlives the wake, so closing the pane still
 			// removes it; the next sleep overwrites it.
 			ps = paneState{LastChangeSeq: a.StateChangeSeq, LastStatus: a.Status, LastChangeAt: now, CapturePath: ps.CapturePath}
@@ -94,11 +120,28 @@ func saveState(path string, s state) error {
 		return fmt.Errorf("write state: %w", err)
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	if err := writeSynced(tmp, b); err != nil {
 		return fmt.Errorf("write state: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("write state: %w", err)
 	}
 	return nil
+}
+
+// writeSynced writes b to path and flushes it to disk, so a rename over the
+// old file never leaves an empty one after a crash.
+func writeSynced(path string, b []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(b)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }

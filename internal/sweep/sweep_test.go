@@ -57,6 +57,10 @@ type fakeHerdr struct {
 	// held each time a SIGTERM went out (path → content).
 	captureDir   string
 	onDiskAtTerm map[string]string
+	// dropReports: herdr accepts plugin reports but never lists them.
+	dropReports bool
+	// sendErr fails every send_text.
+	sendErr error
 }
 
 func (f *fakeHerdr) ReadRecent(_ context.Context, paneID string) (string, error) {
@@ -128,7 +132,9 @@ func (f *fakeHerdr) ReportAgent(_ context.Context, r herdr.AgentReport) error {
 		return nil // accepted, then wiped when the detector catches up
 	}
 	f.events = append(f.events, "report_agent "+r.PaneID)
-	f.reports = append(f.reports, r)
+	if !f.dropReports {
+		f.reports = append(f.reports, r)
+	}
 	return nil
 }
 
@@ -143,6 +149,9 @@ func (f *fakeHerdr) ReportMetadata(_ context.Context, r herdr.MetadataReport) er
 func (f *fakeHerdr) SendText(_ context.Context, paneID, text string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.sendErr != nil {
+		return f.sendErr
+	}
 	if _, ok := f.exitAt[paneID]; ok && !f.agentGone(paneID) {
 		f.events = append(f.events, "send_text while the agent still runs")
 		return nil
@@ -352,6 +361,36 @@ func TestPrefillKeepsFlagsAndResumesTheCurrentSession(t *testing.T) {
 // 0.9.5 resumes: an argv with flags, a stale resume token and a prompt gives
 // herdr's planner command (src/agent_resume.rs) plus the flags. The option
 // lists behind each row, and their sources, are in recipes.go.
+func TestPrefillResumesInTheAgentsWorkingDirectory(t *testing.T) {
+	tests := []struct{ cwd, want string }{
+		{"/home/me/app", "cd /home/me/app && claude --resume " + sessionID},
+		{"/home/me/it's mine; rm -rf ~", `cd '/home/me/it'\''s mine; rm -rf ~' && claude --resume ` + sessionID},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cwd, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				a, p := claudePane("claude")
+				p.Foreground[1].Cwd = tt.cwd
+				h, s := newWorld(t, a, p)
+				putAsleep(t, s)
+				want := "send_text " + pane + " " + tt.want
+				if len(h.events) != 4 || h.events[3] != want {
+					t.Fatalf("events:\n got %q\nwant last %q", h.events, want)
+				}
+
+				// A herdr restart brings the pane back in the shell's home
+				// directory: the rearmed prefill still goes back there.
+				h.restart(pane)
+				h.events = nil
+				run(t, s)
+				if len(h.events) != 3 || h.events[2] != want {
+					t.Fatalf("rearm events:\n got %q\nwant last %q", h.events, want)
+				}
+			})
+		})
+	}
+}
+
 func TestEveryResumableKindIsPrefilledWithItsRecipe(t *testing.T) {
 	const (
 		id   = "s-new"
@@ -1246,6 +1285,164 @@ func TestSweepsSideBySidePutAPaneAsleepOnce(t *testing.T) {
 		}
 		if st := readState(t, s); st[pane]["asleep_at"] == nil {
 			t.Errorf("asleep pane lost from the state: %v", st[pane])
+		}
+		if n := len(h.typed[pane]); n != 2 {
+			t.Errorf("notice and prefill typed %d times in all, want once each: %q", n, h.typed[pane])
+		}
+	})
+}
+
+// assertAsleepAfterAll fails unless the pane, after whatever went wrong while
+// it was put asleep, is listed asleep and was typed the notice and the
+// prefill exactly once.
+func assertAsleepAfterAll(t *testing.T, h *fakeHerdr, prefill string) {
+	t.Helper()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if r, ok := h.lastReport(pane); !ok || r.Agent != "maki" {
+		t.Errorf("not reported asleep: %+v", h.reports)
+	}
+	typed := h.typed[pane]
+	if len(typed) != 2 || !strings.HasPrefix(typed[0], " echo ") || typed[1] != prefill {
+		t.Errorf("typed %q, want the notice then %q, once", typed, prefill)
+	}
+}
+
+func TestPaneStoppedBySweepThatDiedRightAfterSIGTERMEndsUpAsleep(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude", "--model", "opus")
+		h, s := newWorld(t, a, p)
+		run(t, s)
+		time.Sleep(61 * time.Minute)
+		// The sweep's process dies as SIGTERM goes out: only the state
+		// it wrote before survives, and nothing it did after happened.
+		var atTerm []byte
+		s.Signaler.(*fakeSignaler).onTerminate = func() {
+			atTerm, _ = os.ReadFile(s.StatePath)
+		}
+		run(t, s)
+		s.Signaler.(*fakeSignaler).onTerminate = nil
+		if err := os.WriteFile(s.StatePath, atTerm, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		h.reports, h.meta, h.typed[pane] = nil, nil, nil
+
+		time.Sleep(time.Minute)
+		run(t, s)
+		assertAsleepAfterAll(t, h, "claude --resume "+sessionID+" --model opus")
+	})
+}
+
+func TestPaneWhoseSweepWasCancelledAfterSIGTERMEndsUpAsleep(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		run(t, s)
+		time.Sleep(61 * time.Minute)
+		ctx, cancel := context.WithCancel(t.Context())
+		s.Signaler.(*fakeSignaler).onTerminate = cancel // herdr-idle is stopped
+		_, _ = s.Run(ctx)
+		// The signalled agent is seen through, by the same sweep.
+		assertAsleepAfterAll(t, h, "claude --resume "+sessionID)
+
+		time.Sleep(time.Minute)
+		run(t, s)
+		assertAsleepAfterAll(t, h, "claude --resume "+sessionID)
+	})
+}
+
+func TestPaneWhosePrefillFailedIsPrefilledOnALaterSweep(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		run(t, s)
+		time.Sleep(61 * time.Minute)
+		h.sendErr = errors.New("herdr pane.send_text: timeout")
+		if _, err := s.Run(t.Context()); !errors.Is(err, h.sendErr) {
+			t.Fatalf("err = %v, want the send error", err)
+		}
+
+		h.sendErr = nil
+		time.Sleep(time.Minute)
+		run(t, s)
+		assertAsleepAfterAll(t, h, "claude --resume "+sessionID)
+	})
+}
+
+func TestAgentThatExitsAfterTheSIGTERMTimeoutEndsUpAsleep(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		h.ignoreTERM = map[int]bool{agentPGID: true}
+		run(t, s)
+		time.Sleep(61 * time.Minute)
+		out, err := s.Run(t.Context())
+		if err != nil || out[0].Reason != "agent still running 30s after SIGTERM, left alone" {
+			t.Fatalf("err %v, outcomes %+v", err, out)
+		}
+
+		h.exitAt[pane] = time.Now() // it was finishing something
+		time.Sleep(time.Minute)
+		run(t, s)
+		assertAsleepAfterAll(t, h, "claude --resume "+sessionID)
+		if sigterms(h) != 1 {
+			t.Errorf("signalled again: %q", h.events)
+		}
+	})
+}
+
+func TestPrefillIsTypedOncePerShellWhenHerdrDoesNotKeepTheReport(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		h.dropReports = true
+		putAsleep(t, s)
+		d, _ := newDaemon(t, s, 10)
+		startDaemon(t, d)
+		time.Sleep(time.Hour) // six sweeps, a hundred checks
+		synctest.Wait()
+		h.mu.Lock()
+		if n := len(h.typed[pane]); n != 2 {
+			t.Errorf("typed %d times, want the notice and the prefill once: %q", n, h.typed[pane])
+		}
+		// A herdr restart gives the pane a new shell: it gets them again.
+		h.restart(pane)
+		h.mu.Unlock()
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if n := len(h.typed[pane]); n != 4 {
+			t.Errorf("typed %d times after a restart, want 4: %q", n, h.typed[pane])
+		}
+	})
+}
+
+func TestPaneClosedDoesNotWaitForAnAgentToExit(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		h.ignoreTERM = map[int]bool{agentPGID: true}
+		run(t, s)
+		time.Sleep(61 * time.Minute)
+		var wg sync.WaitGroup
+		var took time.Duration
+		s.Signaler.(*fakeSignaler).onTerminate = func() {
+			wg.Go(func() {
+				start := time.Now()
+				if err := s.PaneClosed(t.Context(), pane); err != nil {
+					t.Errorf("pane closed: %v", err)
+				}
+				took = time.Since(start)
+			})
+		}
+		run(t, s)
+		wg.Wait()
+		if took > time.Second {
+			t.Errorf("pane-closed hook waited %s for the sweep", took)
+		}
+		if st := readState(t, s); st[pane] != nil {
+			t.Errorf("closed pane resurrected by the sweep: %v", st[pane])
 		}
 	})
 }

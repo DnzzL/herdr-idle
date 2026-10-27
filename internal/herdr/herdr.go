@@ -45,6 +45,8 @@ type ProcessInfo struct {
 type Process struct {
 	PID  int      `json:"pid"`
 	Argv []string `json:"argv"`
+	// Cwd is the process's working directory; empty when unknown.
+	Cwd string `json:"cwd"`
 }
 
 // AgentReport is pane.report_agent. State is idle|working|blocked|unknown.
