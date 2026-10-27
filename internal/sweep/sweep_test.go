@@ -2,7 +2,11 @@ package sweep_test
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -461,4 +465,122 @@ func TestUnrecognisedCommandLineIsLeftAlone(t *testing.T) {
 			t.Fatalf("acted on an argv that does not run claude: %q", h.events)
 		}
 	})
+}
+
+// wake is the user pressing Enter on the asleep pane: the agent runs again
+// under its own kind, and herdr drops the stand-in report a few seconds
+// later.
+func (f *fakeHerdr) wake(paneID string) {
+	delete(f.exitAt, paneID)
+	f.reports = slices.DeleteFunc(f.reports, func(r herdr.AgentReport) bool { return r.PaneID == paneID })
+}
+
+func TestWokenPaneSleepsAgainOnlyAfterAFullQuietPeriod(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		putAsleep(t, s)
+		if len(h.events) != 4 {
+			t.Fatalf("not asleep: %q", h.events)
+		}
+
+		time.Sleep(3 * time.Hour)
+		h.wake(pane) // same seq: nothing promises herdr bumps it
+		h.events = nil
+		run(t, s) // notices the wake: the clock starts now
+
+		time.Sleep(59 * time.Minute)
+		out, err := s.Run(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(h.events) != 0 {
+			t.Fatalf("put asleep again before a full quiet period: %q", h.events)
+		}
+		if out[0].Reason != "quiet for 59m0s, needs 1h0m0s" {
+			t.Fatalf("outcome %+v", out[0])
+		}
+
+		time.Sleep(2 * time.Minute)
+		run(t, s)
+		if len(h.events) != 4 || h.events[0] != "SIGTERM 4242" {
+			t.Fatalf("not asleep again after a full quiet period: %q", h.events)
+		}
+	})
+}
+
+func TestClosedPaneLeavesNoStateOrCaptureBehind(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		_, s := newWorld(t, a, p)
+		putAsleep(t, s)
+		capture := recordCapture(t, s, pane)
+
+		if err := s.PaneClosed(t.Context(), pane); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := os.Stat(capture); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("capture file still there: %v", err)
+		}
+		if st := readState(t, s); st[pane] != nil {
+			t.Errorf("state entry survived: %v", st[pane])
+		}
+	})
+}
+
+func readState(t *testing.T, s sweep.Sweeper) map[string]map[string]any {
+	t.Helper()
+	b, err := os.ReadFile(s.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st map[string]map[string]any
+	if err := json.Unmarshal(b, &st); err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+func TestClosingAnotherPaneLeavesAsleepPaneAlone(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		putAsleep(t, s)
+		capture := recordCapture(t, s, pane)
+		if err := s.PaneClosed(t.Context(), "w9:p9"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(capture); err != nil {
+			t.Errorf("capture of a pane still open removed: %v", err)
+		}
+		time.Sleep(3 * time.Hour)
+		out, err := s.Run(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(h.events) != 4 || out[0].Reason != "asleep" {
+			t.Fatalf("another pane's close touched this one: %q %+v", h.events, out)
+		}
+	})
+}
+
+// recordCapture writes a capture file for the pane and points its state
+// entry at it, as putting a pane asleep does once screens are captured.
+func recordCapture(t *testing.T, s sweep.Sweeper, paneID string) string {
+	t.Helper()
+	capture := filepath.Join(filepath.Dir(s.StatePath), "capture.txt")
+	if err := os.WriteFile(capture, []byte("screen"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st := readState(t, s)
+	st[paneID]["capture_path"] = capture
+	b, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.StatePath, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return capture
 }

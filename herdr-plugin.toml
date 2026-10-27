@@ -6,4 +6,8 @@ description = "Puts idle agent panes asleep to free their memory; the pane stays
 platforms = ["linux", "macos"]
 
 [[build]]
-command = ["go", "build", "-o", "bin/herdr-idle", "."]
+command = ["sh", "scripts/install.sh"]
+
+[[events]]
+on = "pane.closed"
+command = ["./bin/herdr-idle", "pane-closed"]
