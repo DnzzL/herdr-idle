@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-27 09:06'
-updated_date: '2026-10-27 09:35'
+updated_date: '2026-10-27 09:37'
 labels:
   - ready-for-agent
 dependencies:
@@ -51,4 +51,6 @@ Fix: herdr process check wipes the plugin report ~300ms after exit; sweep re-sen
 State file is per herdr session: state-<sha256(socket)[:6]>.json (pane ids are per-session).
 
 Open: positional prompt on argv (claude "fix X") is kept → replayed on wake. Pending user decision.
+
+Positional prompt decision moved to TASK-1.6 (drop positionals).
 <!-- SECTION:NOTES:END -->
