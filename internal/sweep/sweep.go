@@ -14,6 +14,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/DnzzL/herdr-idle/internal/config"
 	"github.com/DnzzL/herdr-idle/internal/herdr"
 )
 
@@ -40,8 +41,10 @@ type Sweeper struct {
 	// StatePath is the JSON file holding each pane's quiet clock and the
 	// panes put asleep. A missing file starts every clock now.
 	StatePath string
-	// IdleAfter is how long a pane must stay quiet before it is put asleep.
-	IdleAfter time.Duration
+	// Config is read again at the start of every sweep. An invalid file
+	// keeps the last valid config this File loaded; with none, the sweep
+	// does nothing.
+	Config *config.File
 }
 
 // Outcome is what a sweep decided for one agent pane.
@@ -73,11 +76,28 @@ const (
 // others; their errors are joined. Sweeps of the same state file, and
 // PaneClosed, wait for each other.
 func (s Sweeper) Run(ctx context.Context) ([]Outcome, error) {
-	unlock, err := lockState(ctx, s.StatePath)
-	if err != nil {
-		return nil, err
+	return s.sweep(ctx, false)
+}
+
+// Preview says what Run would decide for every agent pane, as a dry run
+// does, and changes nothing: not even the quiet clocks.
+func (s Sweeper) Preview(ctx context.Context) ([]Outcome, error) {
+	return s.sweep(ctx, true)
+}
+
+func (s Sweeper) sweep(ctx context.Context, preview bool) ([]Outcome, error) {
+	cfg, ok, cfgErr := s.Config.Load()
+	if !ok {
+		return nil, cfgErr
 	}
-	defer unlock()
+	errs := []error{cfgErr}
+	if !preview {
+		unlock, err := lockState(ctx, s.StatePath)
+		if err != nil {
+			return nil, err
+		}
+		defer unlock()
+	}
 	agents, err := s.Herdr.Snapshot(ctx)
 	if err != nil {
 		return nil, err
@@ -90,12 +110,11 @@ func (s Sweeper) Run(ctx context.Context) ([]Outcome, error) {
 	next := observe(prev, agents, now)
 
 	var outcomes []Outcome
-	var errs []error
 	for _, a := range agents {
 		o := Outcome{PaneID: a.PaneID, Agent: a.Agent}
-		o.Reason = whyAwake(a, next[a.PaneID], now, s.IdleAfter)
+		o.Reason = whyAwake(a, next[a.PaneID], now, cfg)
 		if o.Reason == "" {
-			argv, reason, err := s.putAsleep(ctx, a)
+			argv, reason, err := s.putAsleep(ctx, a, preview || cfg.DryRun)
 			if err != nil {
 				errs = append(errs, fmt.Errorf("pane %s: %w", a.PaneID, err))
 				reason = "error: " + err.Error()
@@ -109,6 +128,9 @@ func (s Sweeper) Run(ctx context.Context) ([]Outcome, error) {
 			o.Reason = reason
 		}
 		outcomes = append(outcomes, o)
+	}
+	if preview {
+		return outcomes, errors.Join(errs...)
 	}
 	// After a herdr restart our reports are gone: asleep panes are plain
 	// shells herdr no longer lists. Report and prefill them again.
@@ -161,8 +183,9 @@ func (s Sweeper) PaneClosed(ctx context.Context, paneID string) error {
 
 // putAsleep stops the pane's agent and leaves its shell prefilled with the
 // resume command. It returns the prefilled argv once the pane is asleep, or
-// nil and the reason it left the pane alone.
-func (s Sweeper) putAsleep(ctx context.Context, a herdr.Agent) ([]string, string, error) {
+// nil and the reason it left the pane alone. A dry run stops before the first
+// action.
+func (s Sweeper) putAsleep(ctx context.Context, a herdr.Agent, dryRun bool) ([]string, string, error) {
 	// The session ref vanishes from herdr once the agent exits: read
 	// everything needed to resume before stopping it.
 	info, err := s.Herdr.ProcessInfo(ctx, a.PaneID)
@@ -176,6 +199,9 @@ func (s Sweeper) putAsleep(ctx context.Context, a herdr.Agent) ([]string, string
 	argv, ok := resumeArgv(a.Agent, agentProc.Argv, a.Session.Value)
 	if !ok {
 		return nil, fmt.Sprintf("agent command line not recognised: %q", agentProc.Argv), nil
+	}
+	if dryRun {
+		return nil, "would be put asleep, resume with: " + shellJoin(argv), nil
 	}
 
 	if err := s.Signaler.Terminate(info.ForegroundGroupID); err != nil {

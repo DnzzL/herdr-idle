@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-27 09:06'
-updated_date: '2026-10-27 09:35'
+updated_date: '2026-10-27 09:46'
 labels:
   - ready-for-agent
 dependencies:
@@ -26,8 +26,18 @@ A `config.toml` in the plugin config dir, re-read on every sweep, missing means 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Excluded panes or sessions are never put asleep
-- [ ] #2 `dry_run` logs what would happen and performs no SIGTERM, report or prefill
-- [ ] #3 A config change applies on the next sweep without restart; a missing or partial file uses defaults; an invalid file reports every problem and keeps the previous config
+- [x] #1 Excluded panes or sessions are never put asleep
+- [x] #2 `dry_run` logs what would happen and performs no SIGTERM, report or prefill
+- [x] #3 A config change applies on the next sweep without restart; a missing or partial file uses defaults; an invalid file reports every problem and keeps the previous config
 - [ ] #4 `preview` shows each agent pane with its reason; `idle-now` and `config` actions work from herdr
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Merged. Seam: Sweeper.Config *config.File (reloaded each sweep), Sweeper.Preview(ctx) dry, internal/config (Parse joins errors with line numbers, File.Load keeps last valid). CLI: preview [--hold], config. Actions open overlay panes via herdr plugin pane open.
+
+Decision: invalid config with no previous valid one → sweep does nothing (not defaults), so a typo cannot turn dry_run into real SIGTERMs.
+
+AC4 only verified on the CLI: actions/overlays not run in a real herdr (sandbox refused XDG_CONFIG_HOME). TOML subset: flat keys only, anything else reported as a problem.
+<!-- SECTION:NOTES:END -->

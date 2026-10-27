@@ -79,7 +79,8 @@ rows = [
 `config.toml` in the plugin config directory
 (`herdr plugin config-dir dnzzl.idle`), or run the `config` action. A missing
 file or key means the default. Changes apply on the next check, without a
-restart.
+restart. An invalid file is reported with every problem; checks keep the last
+valid config, or do nothing when there was none.
 
 ```toml
 idle_minutes = 60       # quiet time before a pane is put asleep

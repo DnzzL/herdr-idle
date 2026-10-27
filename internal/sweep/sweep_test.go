@@ -15,6 +15,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/DnzzL/herdr-idle/internal/config"
 	"github.com/DnzzL/herdr-idle/internal/herdr"
 	"github.com/DnzzL/herdr-idle/internal/sweep"
 )
@@ -185,7 +186,7 @@ func newWorld(t *testing.T, a herdr.Agent, p herdr.ProcessInfo) (*fakeHerdr, swe
 		Herdr:     h,
 		Signaler:  &fakeSignaler{h: h},
 		StatePath: filepath.Join(t.TempDir(), "state.json"),
-		IdleAfter: 60 * time.Minute,
+		Config:    &config.File{Path: filepath.Join(t.TempDir(), "config.toml")},
 	}
 	return h, s
 }
@@ -239,7 +240,7 @@ func TestQuietClaudePaneIsPutAsleep(t *testing.T) {
 func putAsleep(t *testing.T, s sweep.Sweeper) {
 	t.Helper()
 	run(t, s)
-	time.Sleep(s.IdleAfter + time.Minute)
+	time.Sleep(61 * time.Minute)
 	run(t, s)
 }
 
@@ -270,6 +271,18 @@ func TestPrefillKeepsFlagsAndResumesTheCurrentSession(t *testing.T) {
 			"claude --resume " + sessionID + " --model opus"},
 		{"script run by node", []string{"node", "/opt/homebrew/bin/claude", "--model", "opus"},
 			"claude --resume " + sessionID + " --model opus"},
+		{"prompt dropped, flag values kept",
+			[]string{"claude", "--model", "opus", "fix the login bug", "--permission-mode", "plan"},
+			"claude --resume " + sessionID + " --model opus --permission-mode plan"},
+		{"optional value taken unless an option follows",
+			[]string{"claude", "-d", "hooks", "--debug", "--verbose", "go on"},
+			"claude --resume " + sessionID + " -d hooks --debug --verbose"},
+		{"variadic values kept until the next option",
+			[]string{"claude", "--add-dir", "../a", "../b", "--model", "opus"},
+			"claude --resume " + sessionID + " --add-dir ../a ../b --model opus"},
+		{"everything after -- dropped",
+			[]string{"claude", "--model", "opus", "--", "--not-a-flag prompt"},
+			"claude --resume " + sessionID + " --model opus"},
 		{"spaces and quotes quoted",
 			[]string{"claude", "--append-system-prompt", "don't; rm -rf ~"},
 			"claude --resume " + sessionID + ` --append-system-prompt 'don'\''t; rm -rf ~'`},
@@ -278,6 +291,88 @@ func TestPrefillKeepsFlagsAndResumesTheCurrentSession(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				a, p := claudePane(tt.argv...)
+				h, s := newWorld(t, a, p)
+				putAsleep(t, s)
+				want := "send_text " + pane + " " + tt.want
+				if len(h.events) != 4 || h.events[3] != want {
+					t.Fatalf("events:\n got %q\nwant last %q", h.events, want)
+				}
+			})
+		})
+	}
+}
+
+// TestEveryResumableKindIsPrefilledWithItsRecipe holds one row per kind herdr
+// 0.9.5 resumes: an argv with flags, a stale resume token and a prompt gives
+// herdr's planner command (src/agent_resume.rs) plus the flags. The option
+// lists behind each row, and their sources, are in recipes.go.
+func TestEveryResumableKindIsPrefilledWithItsRecipe(t *testing.T) {
+	const (
+		id   = "s-new"
+		path = "/home/me/.pi/sessions/s-new.jsonl"
+		cur  = "/home/me/.local/share/cursor-agent/versions/2026.10.1/"
+	)
+	tests := []struct {
+		kind, refKind, ref string
+		argv               []string
+		want               string
+	}{
+		{"claude", "id", id, []string{"claude", "--model", "opus", "--resume", "old", "fix it"},
+			"claude --resume s-new --model opus"},
+		{"codex", "id", id,
+			[]string{"codex", "--sandbox", "workspace-write", "resume", "--last", "-c", "model=o3", "go on"},
+			"codex resume s-new --sandbox workspace-write -c model=o3"},
+		{"copilot", "id", id,
+			[]string{"copilot", "--model", "gpt-5", "--resume=old", "-i", "fix it", "--allow-tool", "shell"},
+			"copilot --resume=s-new --model gpt-5 --allow-tool shell"},
+		{"devin", "id", id,
+			[]string{"devin", "--permission-mode", "accept-edits", "-r", "old", "--", "fix it"},
+			"devin --resume s-new --permission-mode accept-edits"},
+		{"droid", "id", id, []string{"droid", "--auto", "high", "--resume", "old", "review app.tsx"},
+			"droid --resume s-new --auto high"},
+		{"kimi", "id", id, []string{"kimi", "-m", "k2", "--session", "old", "-p", "fix it", "--yolo"},
+			"kimi --session s-new -m k2 --yolo"},
+		{"mastracode", "id", id,
+			[]string{"node", "/usr/lib/node_modules/mastracode/dist/cli.js", "--mode", "plan", "resume", "old"},
+			"mastracode --thread s-new --mode plan"},
+		{"pi", "path", path,
+			[]string{"pi", "--model", "sonnet", "--session", "/old.jsonl", "@notes.md", "fix it"},
+			"pi --session " + path + " --model sonnet"},
+		{"omp", "path", path, []string{"omp", "--thinking", "high", "-r", "old", "fix it"},
+			"omp --resume=" + path + " --thinking high"},
+		{"hermes", "id", id, []string{"hermes", "chat", "-m", "hermes-4", "--resume", "old", "-q", "hi"},
+			"hermes --resume s-new -m hermes-4"},
+		{"opencode", "id", id,
+			[]string{"opencode", "-m", "anthropic/sonnet", "-s", "old", "--prompt", "fix it", "."},
+			"opencode --session s-new -m anthropic/sonnet"},
+		{"qodercli", "id", id, []string{"qodercli", "--permission-mode", "plan", "-r", "old", "fix it"},
+			"qodercli --resume s-new --permission-mode plan"},
+		{"qwen", "id", id, []string{"qwen", "--approval-mode", "yolo", "--resume", "old", "fix it"},
+			"qwen --resume s-new --approval-mode yolo"},
+		{"kilo", "id", id, []string{"kilo", "-m", "x/y", "--continue", "--fork", "--prompt", "fix"},
+			"kilo --session s-new -m x/y"},
+		{"cursor", "id", id,
+			[]string{cur + "node", cur + "index.js", "--model", "gpt-5", "--resume", "old", "fix it"},
+			"cursor-agent --resume s-new --model gpt-5"},
+		{"agy", "id", id, []string{"agy", "--mode", "plan", "-c", "--conversation", "old", "fix"},
+			"agy --conversation s-new --mode plan"},
+		{"grok", "id", id, []string{"grok", "-m", "grok-4", "--continue", "--fork-session", "fix"},
+			"grok --resume s-new -m grok-4"},
+		{"letta", "id", id,
+			[]string{"letta", "-m", "sonnet", "--agent", "agent-1", "--conversation", "old", "hi"},
+			"letta --conversation s-new -m sonnet"},
+		{"letta", "id", "default:agent-9", []string{"letta", "--new", "-a", "agent-1"},
+			"letta --conversation default --agent agent-9"},
+		{"pi", "id", "0b1c", []string{"pi", "-c"}, "pi --session 0b1c"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.kind+" "+tt.want, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				a, p := claudePane(tt.argv...)
+				a.Agent = tt.kind
+				a.Session = &herdr.AgentSession{
+					Source: "herdr:" + tt.kind, Agent: tt.kind, Kind: tt.refKind, Value: tt.ref,
+				}
 				h, s := newWorld(t, a, p)
 				putAsleep(t, s)
 				want := "send_text " + pane + " " + tt.want
@@ -306,6 +401,13 @@ func TestPanesThatMustStayAwakeGetNoAction(t *testing.T) {
 			2 * time.Hour, "no resume recipe for gemini"},
 		{"a pane herdr-idle put asleep", func(a *herdr.Agent) { a.Agent = "maki"; a.Session = nil },
 			2 * time.Hour, "no resume recipe for maki"},
+		{"path ref for a kind resumed by id", func(a *herdr.Agent) { a.Session.Kind = "path" },
+			2 * time.Hour, "no session ref"},
+		{"letta default conversation without an agent",
+			func(a *herdr.Agent) {
+				a.Agent, a.Session.Agent, a.Session.Value = "letta", "letta", "default:"
+			},
+			2 * time.Hour, `session ref "default:" cannot be resumed`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -513,6 +615,199 @@ func recordCapture(t *testing.T, s sweep.Sweeper, paneID string) string {
 	return capture
 }
 
+// writeConfig replaces the config file the sweeper reads.
+func writeConfig(t *testing.T, s sweep.Sweeper, toml string) {
+	t.Helper()
+	if err := os.WriteFile(s.Config.Path, []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExcludedPaneOrSessionIsNeverPutAsleep(t *testing.T) {
+	for _, id := range []string{pane, sessionID} {
+		t.Run(id, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				a, p := claudePane("claude")
+				h, s := newWorld(t, a, p)
+				writeConfig(t, s, `exclude = ["w9:p9", "`+id+`"]`)
+				run(t, s)
+				time.Sleep(3 * time.Hour)
+				out, err := s.Run(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(h.events) != 0 || out[0].Reason != "excluded" {
+					t.Fatalf("events %q, outcome %+v", h.events, out)
+				}
+			})
+		})
+	}
+}
+
+func TestDryRunSaysWhatItWouldDoAndDoesNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude", "--model", "opus")
+		h, s := newWorld(t, a, p)
+		writeConfig(t, s, "dry_run = true\n")
+		run(t, s)
+		time.Sleep(61 * time.Minute)
+		out, err := s.Run(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(h.events) != 0 {
+			t.Fatalf("dry run acted: %q", h.events)
+		}
+		want := "would be put asleep, resume with: claude --resume " + sessionID + " --model opus"
+		if out[0].Asleep || out[0].Reason != want {
+			t.Fatalf("outcome %+v, want reason %q", out[0], want)
+		}
+
+		// Turning dry_run off acts on the next sweep: the clock kept running.
+		writeConfig(t, s, "dry_run = false\n")
+		run(t, s)
+		if len(h.events) != 4 {
+			t.Fatalf("events after dry_run off: %q", h.events)
+		}
+	})
+}
+
+func TestConfigChangeAppliesOnTheNextSweep(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		writeConfig(t, s, "# partial file: the rest stays default\nidle_minutes = 90 # longer\n")
+		run(t, s)
+		time.Sleep(61 * time.Minute)
+		run(t, s)
+		if len(h.events) != 0 {
+			t.Fatalf("asleep after 61m with idle_minutes = 90: %q", h.events)
+		}
+
+		writeConfig(t, s, "idle_minutes = 30\n")
+		run(t, s)
+		if len(h.events) != 4 {
+			t.Fatalf("not asleep after 61m with idle_minutes = 30: %q", h.events)
+		}
+	})
+}
+
+func TestInvalidConfigKeepsThePreviousOneAndReportsEveryProblem(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		writeConfig(t, s, "dry_run = true\n")
+		run(t, s)
+
+		writeConfig(t, s, `idle_minutes = "soon"
+dry_run = true
+dryrun = false
+exclude = "w1:p1"
+interval_minutes = 0
+`)
+		time.Sleep(61 * time.Minute)
+		_, err := s.Run(t.Context())
+		if len(h.events) != 0 {
+			t.Fatalf("invalid file dropped the previous dry_run: %q", h.events)
+		}
+		if err == nil {
+			t.Fatal("invalid config not reported")
+		}
+		for _, want := range []string{
+			"line 1: idle_minutes", "line 3: dryrun: unknown key",
+			"line 4: exclude", "line 5: interval_minutes",
+		} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error lacks %q:\n%v", want, err)
+			}
+		}
+		if strings.Contains(err.Error(), "line 2") {
+			t.Errorf("valid line reported: %v", err)
+		}
+	})
+}
+
+func TestInvalidConfigWithNoPreviousOneDoesNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		run(t, s)
+		time.Sleep(61 * time.Minute)
+		// A fresh process (one-shot sweep, new daemon) has no previous
+		// config: falling back to defaults could turn a dry run real.
+		s.Config = &config.File{Path: s.Config.Path}
+		writeConfig(t, s, "dry_run = ture\n")
+		out, err := s.Run(t.Context())
+		if err == nil || len(out) != 0 || len(h.events) != 0 {
+			t.Fatalf("err %v, outcomes %+v, events %q", err, out, h.events)
+		}
+	})
+}
+
+func TestTemplateConfigMeansDefaults(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		writeConfig(t, s, config.Template)
+		putAsleep(t, s)
+		if len(h.events) != 4 {
+			t.Fatalf("events: %q", h.events)
+		}
+	})
+}
+
+func TestExcludeArrayCanSpanLines(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		writeConfig(t, s, `exclude = [
+  "w9:p9", # a loop agent
+  'w1:p1',
+]
+`)
+		putAsleep(t, s)
+		if len(h.events) != 0 {
+			t.Fatalf("excluded pane acted on: %q", h.events)
+		}
+	})
+}
+
+func TestPreviewGivesEveryAgentPaneItsReasonAndChangesNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		focused := a
+		focused.PaneID, focused.Focused = "w1:p2", true
+		h.agents = append(h.agents, focused)
+		run(t, s)
+		time.Sleep(61 * time.Minute)
+
+		out, err := s.Preview(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []sweep.Outcome{
+			{PaneID: pane, Agent: "claude", Reason: "would be put asleep, resume with: claude --resume " + sessionID},
+			{PaneID: "w1:p2", Agent: "claude", Reason: "focused"},
+		}
+		if !slices.Equal(out, want) || len(h.events) != 0 {
+			t.Fatalf("preview:\n got %+v\nwant %+v\nevents %q", out, want, h.events)
+		}
+
+		// A preview leaves the quiet clocks alone: on a fresh state file
+		// the first real sweep still starts them.
+		h2, s2 := newWorld(t, a, p)
+		if _, err := s2.Preview(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(61 * time.Minute)
+		run(t, s2)
+		if len(h2.events) != 0 {
+			t.Fatalf("preview started the quiet clock: %q", h2.events)
+		}
+	})
+}
+
 // restart is a herdr server restart: every plugin report and label is gone,
 // the pane comes back as a fresh shell (new pid) and nothing is resumed.
 func (f *fakeHerdr) restart(paneID string) {
@@ -635,7 +930,7 @@ func TestPaneClosedDuringASweepStaysForgotten(t *testing.T) {
 		const other = "w1:p2"
 		addPane(h, other, 5151)
 		run(t, s)
-		time.Sleep(s.IdleAfter + time.Minute)
+		time.Sleep(61 * time.Minute)
 		var wg sync.WaitGroup
 		s.Signaler.(*fakeSignaler).onTerminate = func() {
 			wg.Go(func() {
@@ -662,11 +957,14 @@ func TestSweepsSideBySidePutAPaneAsleepOnce(t *testing.T) {
 		a, p := claudePane("claude")
 		h, s := newWorld(t, a, p)
 		run(t, s)
-		time.Sleep(s.IdleAfter + time.Minute)
+		time.Sleep(61 * time.Minute)
 
-		// The daemon's sweep and an idle-now sweep start together.
+		// The daemon's sweep and an idle-now sweep (another process, so
+		// its own config file reader) start together.
 		var wg sync.WaitGroup
 		for range 2 {
+			s := s
+			s.Config = &config.File{Path: s.Config.Path}
 			wg.Go(func() {
 				if _, err := s.Run(t.Context()); err != nil {
 					t.Errorf("sweep: %v", err)
