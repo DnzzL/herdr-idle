@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-27 09:06'
-updated_date: '2026-10-27 09:21'
+updated_date: '2026-10-27 09:35'
 labels:
   - ready-for-agent
 dependencies:
@@ -28,12 +28,12 @@ Before code: record the ADR (SIGTERM + plugin-owned resume table, rejected: rely
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 ADR recorded before implementation, naming the rejected alternative
-- [ ] #2 A qualifying Claude pane gets SIGTERM on its foreground process group, an `asleep` report, and the resume command prefilled without Enter
-- [ ] #3 Prefilled argv keeps the original flags and replaces any existing resume token with the current session id
-- [ ] #4 Focused, working/blocked, not-yet-quiet and no-session-ref panes get no action (sweep table tests)
-- [ ] #5 Quiet clock starts when a state change is first observed; a fresh state file starts every clock at now
-- [ ] #6 Tests run through the sweep seam only and pass with `go test -race -shuffle=on`; vet/staticcheck clean
+- [x] #1 ADR recorded before implementation, naming the rejected alternative
+- [x] #2 A qualifying Claude pane gets SIGTERM on its foreground process group, an `asleep` report, and the resume command prefilled without Enter
+- [x] #3 Prefilled argv keeps the original flags and replaces any existing resume token with the current session id
+- [x] #4 Focused, working/blocked, not-yet-quiet and no-session-ref panes get no action (sweep table tests)
+- [x] #5 Quiet clock starts when a state change is first observed; a fresh state file starts every clock at now
+- [x] #6 Tests run through the sweep seam only and pass with `go test -race -shuffle=on`; vet/staticcheck clean
 - [ ] #7 Manual check on a disposable herdr session: a real Claude pane goes asleep and Enter resumes the same session
 <!-- AC:END -->
 
@@ -41,4 +41,14 @@ Before code: record the ADR (SIGTERM + plugin-owned resume table, rejected: rely
 
 <!-- SECTION:NOTES:BEGIN -->
 Per TASK-1 decision: report under stand-in kind maki + report_metadata (display_agent=real kind, state label idle=asleep, applies_to_source dnzzl.idle). Read session ref before SIGTERM; prefill only once foreground group == shell pid. A pane the plugin reported (agent maki, source dnzzl.idle) must never be treated as a sleep candidate itself.
+
+Merged into feat/herdr-idle. Seam: internal/sweep Sweeper.Run(ctx) ([]Outcome, error) over Herdr + Signaler interfaces; internal/herdr socket client; main run(ctx,args,getenv,stdout) with sweep|version, requires HERDR_SOCKET_PATH.
+
+Manual on disposable session: fake claude pane put asleep (maki/display claude/idle=asleep, prefill with flags kept). Real claude same-session resume NOT verified → AC7 open, covered by TASK-1.9.
+
+Fix: herdr process check wipes the plugin report ~300ms after exit; sweep re-sends report_agent until it sticks 1s, within 30s. Fragile on herdr timing.
+
+State file is per herdr session: state-<sha256(socket)[:6]>.json (pane ids are per-session).
+
+Open: positional prompt on argv (claude "fix X") is kept → replayed on wake. Pending user decision.
 <!-- SECTION:NOTES:END -->

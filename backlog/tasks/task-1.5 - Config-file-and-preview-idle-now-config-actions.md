@@ -1,9 +1,11 @@
 ---
 id: TASK-1.5
 title: 'Config file and preview, idle-now, config actions'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-27 09:06'
+updated_date: '2026-10-27 09:35'
 labels:
   - ready-for-agent
 dependencies:

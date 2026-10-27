@@ -1,9 +1,11 @@
 ---
 id: TASK-1.4
 title: 'Safety rules: child processes, screen capture, no force kill'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-27 09:06'
+updated_date: '2026-10-27 09:35'
 labels:
   - ready-for-agent
 dependencies:

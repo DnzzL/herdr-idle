@@ -1,9 +1,11 @@
 ---
 id: TASK-1.8
 title: 'Distribution: install script, release CI, CHANGELOG, README'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-27 09:07'
+updated_date: '2026-10-27 09:35'
 labels:
   - ready-for-agent
 dependencies:

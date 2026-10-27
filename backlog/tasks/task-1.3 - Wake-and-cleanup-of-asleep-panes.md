@@ -1,10 +1,11 @@
 ---
 id: TASK-1.3
 title: Wake and cleanup of asleep panes
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-27 09:06'
-updated_date: '2026-10-27 09:20'
+updated_date: '2026-10-27 09:35'
 labels:
   - ready-for-agent
 dependencies:
