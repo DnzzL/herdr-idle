@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-27 09:00'
-updated_date: '2026-10-27 09:17'
+updated_date: '2026-10-27 09:20'
 labels:
   - ready-for-agent
 dependencies: []
@@ -186,4 +186,10 @@ Spike TASK-1.1 findings (herdr 0.9.5, disposable session):
 - Server restart: plugin reports, labels, prefill and scrollback all gone; nothing resumed; exit gate reset (same-kind report accepted again). Capture file = only record after restart.
 
 - herdr session ref disappears on process exit → read it before SIGTERM.
+
+DECISION (user, after spike): asleep panes are reported via pane.report_agent under the fixed stand-in kind `maki` (herdr cannot resume it), state idle, source dnzzl.idle, then pane.report_metadata --display-agent <real kind> --state-label idle=asleep --applies-to-source dnzzl.idle. Supersedes "reported with state text asleep" in Implementation Decisions. Accepted cost: snapshot/agent list show agent maki; relies on herdr 0.9.5 internals.
+
+Order when putting asleep: read session ref + argv BEFORE SIGTERM (ref vanishes on exit) → capture → SIGTERM → wait until foreground_process_group_id == shell_pid → report_agent(maki) → report_metadata → send_text prefill.
+
+After a herdr restart, scrollback is gone: the capture file is the only record (weakens US 9/29 across restarts). Upstream requests (placeholder API, agent.resume) not filed.
 <!-- SECTION:NOTES:END -->

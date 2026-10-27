@@ -4,6 +4,7 @@ title: 'Tracer: one Claude pane put asleep by a one-shot sweep'
 status: To Do
 assignee: []
 created_date: '2026-10-27 09:06'
+updated_date: '2026-10-27 09:20'
 labels:
   - ready-for-agent
 dependencies:
@@ -34,3 +35,9 @@ Before code: record the ADR (SIGTERM + plugin-owned resume table, rejected: rely
 - [ ] #6 Tests run through the sweep seam only and pass with `go test -race -shuffle=on`; vet/staticcheck clean
 - [ ] #7 Manual check on a disposable herdr session: a real Claude pane goes asleep and Enter resumes the same session
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Per TASK-1 decision: report under stand-in kind maki + report_metadata (display_agent=real kind, state label idle=asleep, applies_to_source dnzzl.idle). Read session ref before SIGTERM; prefill only once foreground group == shell pid. A pane the plugin reported (agent maki, source dnzzl.idle) must never be treated as a sleep candidate itself.
+<!-- SECTION:NOTES:END -->

@@ -4,6 +4,7 @@ title: Daemon and rearm across herdr restarts
 status: To Do
 assignee: []
 created_date: '2026-10-27 09:07'
+updated_date: '2026-10-27 09:20'
 labels:
   - ready-for-agent
 dependencies:
@@ -29,3 +30,9 @@ A `[[startup]]` hook starts one daemon per herdr session (lock keyed on the sess
 - [ ] #3 After a herdr restart, asleep panes are listed as `asleep` again with the prefill, and no agent is started
 - [ ] #4 Covered by tests through the sweep/rearm seam with the fake clock; no bare goroutines
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Per spike: after herdr restart all plugin reports/labels/prefill are gone and nothing resumes; rearm re-sends report_agent(maki)+report_metadata+prefill once the shell owns the foreground.
+<!-- SECTION:NOTES:END -->
