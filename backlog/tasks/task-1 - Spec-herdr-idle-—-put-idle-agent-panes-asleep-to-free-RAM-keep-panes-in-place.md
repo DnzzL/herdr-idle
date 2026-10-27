@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-27 09:00'
+updated_date: '2026-10-27 09:17'
 labels:
   - ready-for-agent
 dependencies: []
@@ -164,3 +165,25 @@ Pressing Enter wakes the agent; Ctrl+C clears the line. Asleep panes stay asleep
 - [ ] #8 Install script fetches a checksum-verified prebuilt binary for darwin/linux × amd64/arm64 and falls back to `go build`
 - [ ] #9 Sweep-seam tests pass with `go test -race -shuffle=on`; manual spike confirms report-only shell panes stay in the agent list
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Spike TASK-1.1 findings (herdr 0.9.5, disposable session):
+
+- BLOCKER: after a kind process exits in a pane, a plugin report with the same --agent kind is accepted (ok) but silently dropped until a new agent process of that kind or a server restart (recent_agent_process_exit gate, terminal/state.rs:713-719). Applies to all kinds except full-lifecycle sources (pi/omp/opencode/kilo/kimi/mastracode).
+
+- Custom labels not tied to a kind are cleared in <100ms once the shell is idle (pane.rs:383-410).
+
+- Workaround verified: report a different known kind (maki/pi) + pane.report_metadata --display-agent <real kind> --state-label idle=asleep --applies-to-source dnzzl.idle → listed, survives shell commands, auto-cleared ~4s after the real agent restarts.
+
+- report_agent --state only idle|working|blocked|unknown; the asleep text must come from report_metadata state labels.
+
+- Same-kind report blocks herdr state for a woken agent (shows asleep while working) until released.
+
+- send_text without Enter = editable prefill; must wait for foreground group == shell pid, else stray echo.
+
+- Server restart: plugin reports, labels, prefill and scrollback all gone; nothing resumed; exit gate reset (same-kind report accepted again). Capture file = only record after restart.
+
+- herdr session ref disappears on process exit → read it before SIGTERM.
+<!-- SECTION:NOTES:END -->

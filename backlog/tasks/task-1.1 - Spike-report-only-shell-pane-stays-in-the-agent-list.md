@@ -1,9 +1,11 @@
 ---
 id: TASK-1.1
 title: 'Spike: report-only shell pane stays in the agent list'
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@claude'
 created_date: '2026-10-27 09:06'
+updated_date: '2026-10-27 09:17'
 labels:
   - ready-for-agent
 dependencies: []
@@ -23,8 +25,14 @@ On a real herdr session (use a disposable named session, never the user's main o
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Findings on TASK-1 state whether a report-only shell pane appears in `herdr agent list` / snapshot agents and the sidebar
-- [ ] #2 Findings state whether the report survives commands run in the shell and what `pane.release_agent` restores
-- [ ] #3 Findings state whether `pane.send_text` without Enter leaves an editable prefilled line
-- [ ] #4 If any assumption fails, TASK-1 notes propose the design change; no production code written
+- [x] #1 Findings on TASK-1 state whether a report-only shell pane appears in `herdr agent list` / snapshot agents and the sidebar
+- [x] #2 Findings state whether the report survives commands run in the shell and what `pane.release_agent` restores
+- [x] #3 Findings state whether `pane.send_text` without Enter leaves an editable prefilled line
+- [x] #4 If any assumption fails, TASK-1 notes propose the design change; no production code written
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Spike done on a disposable herdr session. Report-only pane listing works only with a stand-in kind after the real agent exits; asleep label via report_metadata; prefill works once shell owns the foreground. Findings in TASK-1 notes. Design decision D1 pending with user.
+<!-- SECTION:FINAL_SUMMARY:END -->
