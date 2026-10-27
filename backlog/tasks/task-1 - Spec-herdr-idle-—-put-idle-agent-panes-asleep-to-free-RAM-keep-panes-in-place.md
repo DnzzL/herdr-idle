@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-27 09:00'
-updated_date: '2026-10-27 09:20'
+updated_date: '2026-10-27 10:02'
 labels:
   - ready-for-agent
 dependencies: []
@@ -192,4 +192,6 @@ DECISION (user, after spike): asleep panes are reported via pane.report_agent un
 Order when putting asleep: read session ref + argv BEFORE SIGTERM (ref vanishes on exit) → capture → SIGTERM → wait until foreground_process_group_id == shell_pid → report_agent(maki) → report_metadata → send_text prefill.
 
 After a herdr restart, scrollback is gone: the capture file is the only record (weakens US 9/29 across restarts). Upstream requests (placeholder API, agent.resume) not filed.
+
+Spec update after code review: no standalone `rearm` subcommand — rearm runs inside the daemon (each sweep + every 30s check). Process facts come from pane.process_info plus `ps` for the agent direct children (Claude runs tools in its own process group, invisible to herdr); supersedes "No /proc, ps or lsof".
 <!-- SECTION:NOTES:END -->
