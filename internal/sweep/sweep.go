@@ -68,9 +68,16 @@ const (
 	reportSettle = time.Second
 )
 
-// Run sweeps the session once. It returns one outcome per agent pane. A
-// failure on one pane does not stop the others; their errors are joined.
+// Run sweeps the session once. It returns one outcome per agent pane, and
+// one per asleep pane it rearmed. A failure on one pane does not stop the
+// others; their errors are joined. Sweeps of the same state file, and
+// PaneClosed, wait for each other.
 func (s Sweeper) Run(ctx context.Context) ([]Outcome, error) {
+	unlock, err := lockState(ctx, s.StatePath)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	agents, err := s.Herdr.Snapshot(ctx)
 	if err != nil {
 		return nil, err
@@ -130,9 +137,11 @@ func (s Sweeper) Run(ctx context.Context) ([]Outcome, error) {
 // PaneClosed forgets a pane herdr has closed: its state entry and its capture
 // file are removed. An unknown pane is not an error.
 func (s Sweeper) PaneClosed(ctx context.Context, paneID string) error {
-	if err := ctx.Err(); err != nil {
+	unlock, err := lockState(ctx, s.StatePath)
+	if err != nil {
 		return err
 	}
+	defer unlock()
 	st, err := loadState(s.StatePath)
 	if err != nil {
 		return err

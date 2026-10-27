@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -29,6 +30,7 @@ const (
 // Every call that changes something lands in events, in order, alongside the
 // signals sent by fakeSignaler.
 type fakeHerdr struct {
+	mu sync.Mutex // sweeps may run side by side
 	agents []herdr.Agent
 	procs  map[string]herdr.ProcessInfo
 	exitAt map[string]time.Time // pane → when its terminated agent is gone
@@ -48,6 +50,8 @@ type fakeHerdr struct {
 const herdrLag = 500 * time.Millisecond
 
 func (f *fakeHerdr) Snapshot(context.Context) ([]herdr.Agent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	var out []herdr.Agent
 	for _, a := range f.agents {
 		if r, ok := f.lastReport(a.PaneID); ok {
@@ -76,6 +80,8 @@ func (f *fakeHerdr) herdrNoticedExit(paneID string) bool {
 }
 
 func (f *fakeHerdr) ProcessInfo(_ context.Context, paneID string) (herdr.ProcessInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	p, ok := f.procs[paneID]
 	if !ok {
 		return herdr.ProcessInfo{}, fmt.Errorf("no pane %s", paneID)
@@ -95,6 +101,8 @@ func (f *fakeHerdr) agentGone(paneID string) bool {
 }
 
 func (f *fakeHerdr) ReportAgent(_ context.Context, r herdr.AgentReport) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if _, ok := f.exitAt[r.PaneID]; ok && !f.herdrNoticedExit(r.PaneID) {
 		return nil // accepted, then wiped when the detector catches up
 	}
@@ -104,12 +112,16 @@ func (f *fakeHerdr) ReportAgent(_ context.Context, r herdr.AgentReport) error {
 }
 
 func (f *fakeHerdr) ReportMetadata(_ context.Context, r herdr.MetadataReport) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.events = append(f.events, "report_metadata "+r.PaneID)
 	f.meta = append(f.meta, r)
 	return nil
 }
 
 func (f *fakeHerdr) SendText(_ context.Context, paneID, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if _, ok := f.exitAt[paneID]; ok && !f.agentGone(paneID) {
 		f.events = append(f.events, "send_text while the agent still runs")
 		return nil
@@ -120,9 +132,18 @@ func (f *fakeHerdr) SendText(_ context.Context, paneID, text string) error {
 
 // fakeSignaler stands in for the OS: SIGTERM to a pane's foreground group
 // ends the agent 2s later, handing the terminal back to the shell.
-type fakeSignaler struct{ h *fakeHerdr }
+type fakeSignaler struct {
+	h *fakeHerdr
+	// onTerminate, if set, runs as the signal is sent.
+	onTerminate func()
+}
 
 func (s *fakeSignaler) Terminate(pgid int) error {
+	if s.onTerminate != nil {
+		s.onTerminate()
+	}
+	s.h.mu.Lock()
+	defer s.h.mu.Unlock()
 	s.h.events = append(s.h.events, fmt.Sprintf("SIGTERM %d", pgid))
 	for id, p := range s.h.procs {
 		if p.ForegroundGroupID == pgid {
@@ -588,6 +609,83 @@ func TestRearmLeavesABusyShellForALaterSweep(t *testing.T) {
 		run(t, s)
 		if len(h.events) != 3 {
 			t.Fatalf("not rearmed once the shell was free: %q", h.events)
+		}
+	})
+}
+
+// addPane adds a second quiet claude pane to the world, its agent in group
+// pgid.
+func addPane(h *fakeHerdr, id string, pgid int) {
+	a, p := claudePane("claude")
+	a.PaneID = id
+	p.ForegroundGroupID = pgid
+	p.Foreground[1].PID = pgid
+	h.agents = append(h.agents, a)
+	h.procs[id] = p
+}
+
+func TestPaneClosedDuringASweepStaysForgotten(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		putAsleep(t, s)
+
+		// A second pane is being put asleep by a sweep; while that sweep
+		// waits for the agent to exit, herdr closes the first pane.
+		const other = "w1:p2"
+		addPane(h, other, 5151)
+		run(t, s)
+		time.Sleep(s.IdleAfter + time.Minute)
+		var wg sync.WaitGroup
+		s.Signaler.(*fakeSignaler).onTerminate = func() {
+			wg.Go(func() {
+				if err := s.PaneClosed(t.Context(), pane); err != nil {
+					t.Errorf("pane closed: %v", err)
+				}
+			})
+		}
+		run(t, s)
+		wg.Wait()
+
+		st := readState(t, s)
+		if st[pane] != nil {
+			t.Errorf("closed pane resurrected by the sweep: %v", st[pane])
+		}
+		if st[other]["asleep_at"] == nil {
+			t.Errorf("pane put asleep meanwhile lost: %v", st[other])
+		}
+	})
+}
+
+func TestSweepsSideBySidePutAPaneAsleepOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		run(t, s)
+		time.Sleep(s.IdleAfter + time.Minute)
+
+		// The daemon's sweep and an idle-now sweep start together.
+		var wg sync.WaitGroup
+		for range 2 {
+			wg.Go(func() {
+				if _, err := s.Run(t.Context()); err != nil {
+					t.Errorf("sweep: %v", err)
+				}
+			})
+		}
+		wg.Wait()
+
+		var sigterms int
+		for _, e := range h.events {
+			if strings.HasPrefix(e, "SIGTERM") {
+				sigterms++
+			}
+		}
+		if sigterms != 1 {
+			t.Errorf("SIGTERM sent %d times: %q", sigterms, h.events)
+		}
+		if st := readState(t, s); st[pane]["asleep_at"] == nil {
+			t.Errorf("asleep pane lost from the state: %v", st[pane])
 		}
 	})
 }
