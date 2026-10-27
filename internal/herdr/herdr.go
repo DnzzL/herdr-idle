@@ -108,6 +108,24 @@ func (c *Client) ProcessInfo(ctx context.Context, paneID string) (ProcessInfo, e
 	return res.ProcessInfo, err
 }
 
+// recentLines is how much of an agent's screen ReadRecent returns: herdr's
+// maximum.
+const recentLines = 1000
+
+// ReadRecent returns the last lines of the agent pane's screen as plain
+// text, scrollback included (agent.read, source recent).
+func (c *Client) ReadRecent(ctx context.Context, paneID string) (string, error) {
+	var res struct {
+		Read struct {
+			Text string `json:"text"`
+		} `json:"read"`
+	}
+	err := c.call(ctx, "agent.read", map[string]any{
+		"target": paneID, "source": "recent", "lines": recentLines,
+	}, &res)
+	return res.Read.Text, err
+}
+
 // ReportAgent reports an agent for a pane on behalf of a plugin source.
 func (c *Client) ReportAgent(ctx context.Context, r AgentReport) error {
 	return c.call(ctx, "pane.report_agent", r, nil)

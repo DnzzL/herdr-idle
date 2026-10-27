@@ -8,6 +8,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/DnzzL/herdr-idle/internal/herdr"
@@ -17,6 +20,8 @@ import (
 type Herdr interface {
 	Snapshot(ctx context.Context) ([]herdr.Agent, error)
 	ProcessInfo(ctx context.Context, paneID string) (herdr.ProcessInfo, error)
+	// ReadRecent returns the pane's recent screen as plain text.
+	ReadRecent(ctx context.Context, paneID string) (string, error)
 	ReportAgent(ctx context.Context, r herdr.AgentReport) error
 	ReportMetadata(ctx context.Context, r herdr.MetadataReport) error
 	SendText(ctx context.Context, paneID, text string) error
@@ -28,14 +33,25 @@ type Signaler interface {
 	Terminate(pgid int) error
 }
 
+// Processes reads the OS process table. herdr only lists the foreground
+// process group; an agent runs its tool commands in groups of their own.
+type Processes interface {
+	// Children returns the direct children of pid, whatever their group.
+	Children(ctx context.Context, pid int) ([]herdr.Process, error)
+}
+
 // Sweeper holds what a sweep needs. The zero value is not usable: every field
 // must be set.
 type Sweeper struct {
-	Herdr    Herdr
-	Signaler Signaler
+	Herdr     Herdr
+	Signaler  Signaler
+	Processes Processes
 	// StatePath is the JSON file holding each pane's quiet clock and the
 	// panes put asleep. A missing file starts every clock now.
 	StatePath string
+	// CaptureDir receives one file per pane put asleep: its recent screen,
+	// saved before the agent is stopped.
+	CaptureDir string
 	// IdleAfter is how long a pane must stay quiet before it is put asleep.
 	IdleAfter time.Duration
 }
@@ -63,6 +79,10 @@ const (
 	// when it notices the agent exited, which can be after the shell is back.
 	reportSettle = time.Second
 )
+
+// termIgnored is putAsleep's reason when the agent outlived SIGTERM. It is
+// never sent SIGKILL: whatever it is doing is left to finish.
+var termIgnored = fmt.Sprintf("agent still running %s after SIGTERM, left alone", exitTimeout)
 
 // Run sweeps the session once. It returns one outcome per agent pane. A
 // failure on one pane does not stop the others; their errors are joined.
@@ -95,6 +115,11 @@ func (s Sweeper) Run(ctx context.Context) ([]Outcome, error) {
 				next[a.PaneID] = ps
 				o.Asleep = true
 			}
+			if reason == termIgnored {
+				ps := next[a.PaneID]
+				ps.TermIgnored = true
+				next[a.PaneID] = ps
+			}
 			o.Reason = reason
 		}
 		outcomes = append(outcomes, o)
@@ -119,9 +144,22 @@ func (s Sweeper) putAsleep(ctx context.Context, a herdr.Agent) ([]string, string
 	if !ok {
 		return nil, "no agent process in the foreground", nil
 	}
+	children, err := s.Processes.Children(ctx, agentProc.PID)
+	if err != nil {
+		return nil, "", err
+	}
+	if p, busy := busyChild(agentProc.PID, append(info.Foreground, children...)); busy {
+		return nil, "running " + strings.Join(p.Argv, " "), nil
+	}
 	argv, ok := resumeArgv(a.Agent, agentProc.Argv, a.Session.Value)
 	if !ok {
 		return nil, fmt.Sprintf("agent command line not recognised: %q", agentProc.Argv), nil
+	}
+
+	// Nothing on screen may be lost: no capture, no SIGTERM.
+	capture, err := s.capture(ctx, a.PaneID)
+	if err != nil {
+		return nil, "", err
 	}
 
 	if err := s.Signaler.Terminate(info.ForegroundGroupID); err != nil {
@@ -133,7 +171,7 @@ func (s Sweeper) putAsleep(ctx context.Context, a herdr.Agent) ([]string, string
 		return nil, "", err
 	}
 	if !gone {
-		return nil, fmt.Sprintf("agent still running %s after SIGTERM, left alone", exitTimeout), nil
+		return nil, termIgnored, nil
 	}
 
 	// The agent is stopped: from here on the pane must end up prefilled
@@ -151,6 +189,13 @@ func (s Sweeper) putAsleep(ctx context.Context, a herdr.Agent) ([]string, string
 	}); err != nil {
 		return nil, "", err
 	}
+	// Run with Enter before the prefill, so the prefill stays editable at
+	// the next prompt. The leading space keeps it out of shell history
+	// where the shell honours that.
+	notice := " " + shellJoin([]string{"echo", "herdr-idle: screen saved to " + capture}) + "\r"
+	if err := s.Herdr.SendText(ctx, a.PaneID, notice); err != nil {
+		return nil, "", err
+	}
 	if err := s.Herdr.SendText(ctx, a.PaneID, shellJoin(argv)); err != nil {
 		return nil, "", err
 	}
@@ -158,6 +203,24 @@ func (s Sweeper) putAsleep(ctx context.Context, a herdr.Agent) ([]string, string
 		return argv, "put asleep, but herdr did not keep it in the agent list", nil
 	}
 	return argv, "put asleep", nil
+}
+
+// capture saves the pane's recent screen to its file in CaptureDir and
+// returns the file's path.
+func (s Sweeper) capture(ctx context.Context, paneID string) (string, error) {
+	text, err := s.Herdr.ReadRecent(ctx, paneID)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(s.CaptureDir, 0o700); err != nil {
+		return "", fmt.Errorf("save screen: %w", err)
+	}
+	// Pane ids look like w1:p2; keep file names portable.
+	path := filepath.Join(s.CaptureDir, strings.ReplaceAll(paneID, ":", "-")+".txt")
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		return "", fmt.Errorf("save screen: %w", err)
+	}
+	return path, nil
 }
 
 // waitForShell polls until the pane's shell owns the terminal again, so the

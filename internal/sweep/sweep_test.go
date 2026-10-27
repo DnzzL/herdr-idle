@@ -2,7 +2,9 @@ package sweep_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -31,6 +33,21 @@ type fakeHerdr struct {
 	events  []string
 	reports []herdr.AgentReport
 	meta    []herdr.MetadataReport
+	// children is the OS side: each pid's child processes, whatever their
+	// process group.
+	children map[int][]herdr.Process
+	screens  map[string]string // pane → its recent screen text
+	readErr  error
+	// ignoreTERM lists process groups that survive SIGTERM.
+	ignoreTERM map[int]bool
+	// captureDir is where the sweep saves screens; onDiskAtTerm is what it
+	// held each time a SIGTERM went out (path → content).
+	captureDir   string
+	onDiskAtTerm map[string]string
+}
+
+func (f *fakeHerdr) ReadRecent(_ context.Context, paneID string) (string, error) {
+	return f.screens[paneID], f.readErr
 }
 
 // herdrLag is how long after an agent exits herdr's process detector
@@ -110,10 +127,22 @@ func (f *fakeHerdr) SendText(_ context.Context, paneID, text string) error {
 // ends the agent 2s later, handing the terminal back to the shell.
 type fakeSignaler struct{ h *fakeHerdr }
 
+func (s *fakeSignaler) Children(_ context.Context, pid int) ([]herdr.Process, error) {
+	return s.h.children[pid], nil
+}
+
 func (s *fakeSignaler) Terminate(pgid int) error {
 	s.h.events = append(s.h.events, fmt.Sprintf("SIGTERM %d", pgid))
+	files, _ := filepath.Glob(filepath.Join(s.h.captureDir, "*"))
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			return err
+		}
+		s.h.onDiskAtTerm[f] = string(b)
+	}
 	for id, p := range s.h.procs {
-		if p.ForegroundGroupID == pgid {
+		if p.ForegroundGroupID == pgid && !s.h.ignoreTERM[pgid] {
 			s.h.exitAt[id] = time.Now().Add(2 * time.Second)
 		}
 	}
@@ -144,15 +173,22 @@ func claudePane(argv ...string) (herdr.Agent, herdr.ProcessInfo) {
 func newWorld(t *testing.T, a herdr.Agent, p herdr.ProcessInfo) (*fakeHerdr, sweep.Sweeper) {
 	t.Helper()
 	h := &fakeHerdr{
-		agents: []herdr.Agent{a},
-		procs:  map[string]herdr.ProcessInfo{a.PaneID: p},
-		exitAt: map[string]time.Time{},
+		agents:       []herdr.Agent{a},
+		procs:        map[string]herdr.ProcessInfo{a.PaneID: p},
+		exitAt:       map[string]time.Time{},
+		children:     map[int][]herdr.Process{},
+		screens:      map[string]string{},
+		captureDir:   filepath.Join(t.TempDir(), "captures"),
+		onDiskAtTerm: map[string]string{},
 	}
+	sys := &fakeSignaler{h: h}
 	s := sweep.Sweeper{
-		Herdr:     h,
-		Signaler:  &fakeSignaler{h: h},
-		StatePath: filepath.Join(t.TempDir(), "state.json"),
-		IdleAfter: 60 * time.Minute,
+		Herdr:      h,
+		Signaler:   sys,
+		Processes:  sys,
+		StatePath:  filepath.Join(t.TempDir(), "state.json"),
+		CaptureDir: h.captureDir,
+		IdleAfter:  60 * time.Minute,
 	}
 	return h, s
 }
@@ -181,9 +217,14 @@ func TestQuietClaudePaneIsPutAsleep(t *testing.T) {
 			"SIGTERM 4242",
 			"report_agent " + pane,
 			"report_metadata " + pane,
+			"notice",
 			"send_text " + pane + " claude --resume " + sessionID + " --model opus",
 		}
-		if !slices.Equal(h.events, want) {
+		got := slices.Clone(h.events)
+		if len(got) > 3 && strings.HasPrefix(got[3], "send_text "+pane+"  echo ") {
+			got[3] = "notice" // its text is checked by the capture test
+		}
+		if !slices.Equal(got, want) {
 			t.Fatalf("events:\n got %q\nwant %q", h.events, want)
 		}
 		wantReport := herdr.AgentReport{PaneID: pane, Source: "dnzzl.idle", Agent: "maki", State: "idle"}
@@ -195,8 +236,8 @@ func TestQuietClaudePaneIsPutAsleep(t *testing.T) {
 			m.DisplayAgent != "claude" || m.StateLabels["idle"] != "asleep" {
 			t.Errorf("report_metadata = %+v", m)
 		}
-		if strings.ContainsAny(h.events[3], "\r\n") {
-			t.Errorf("prefill pressed Enter: %q", h.events[3])
+		if strings.ContainsAny(h.events[4], "\r\n") {
+			t.Errorf("prefill pressed Enter: %q", h.events[4])
 		}
 	})
 }
@@ -248,7 +289,7 @@ func TestPrefillKeepsFlagsAndResumesTheCurrentSession(t *testing.T) {
 				h, s := newWorld(t, a, p)
 				putAsleep(t, s)
 				want := "send_text " + pane + " " + tt.want
-				if len(h.events) != 4 || h.events[3] != want {
+				if len(h.events) != 5 || h.events[4] != want {
 					t.Fatalf("events:\n got %q\nwant last %q", h.events, want)
 				}
 			})
@@ -303,7 +344,7 @@ func TestDonePaneIsPutAsleep(t *testing.T) {
 		a.Status = "done"
 		h, s := newWorld(t, a, p)
 		putAsleep(t, s)
-		if len(h.events) != 4 {
+		if len(h.events) != 5 {
 			t.Fatalf("events: %q", h.events)
 		}
 	})
@@ -327,7 +368,7 @@ func TestQuietClockRestartsOnEveryStateChange(t *testing.T) {
 
 		time.Sleep(2 * time.Minute)
 		run(t, s)
-		if len(h.events) != 4 {
+		if len(h.events) != 5 {
 			t.Fatalf("not asleep after a full quiet period: %q", h.events)
 		}
 	})
@@ -345,7 +386,7 @@ func TestAsleepPaneIsNotPutAsleepAgain(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(h.events) != 4 || out[0].Reason != "asleep" {
+		if len(h.events) != 5 || out[0].Reason != "asleep" {
 			t.Fatalf("events %q, outcome %+v", h.events, out)
 		}
 	})
@@ -358,6 +399,181 @@ func TestUnrecognisedCommandLineIsLeftAlone(t *testing.T) {
 		putAsleep(t, s)
 		if len(h.events) != 0 {
 			t.Fatalf("acted on an argv that does not run claude: %q", h.events)
+		}
+	})
+}
+
+func TestPaneWithRunningWorkIsLeftAlone(t *testing.T) {
+	tests := []struct {
+		name  string
+		child []string
+	}{
+		{"dev server", []string{"npm", "run", "dev"}},
+		{"shell", []string{"/bin/zsh", "-c", "go test ./..."}},
+		{"server under a path named mcp", []string{"node", "/Users/me/mcp-tools/server.js"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name+" in the foreground group", func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				a, p := claudePane("claude")
+				p.Foreground = append(p.Foreground, herdr.Process{PID: agentPGID + 9, Argv: tt.child})
+				h, s := newWorld(t, a, p)
+				assertLeftAlone(t, h, s, "running "+strings.Join(tt.child, " "))
+			})
+		})
+		// The agent's tool commands run in their own process group: herdr
+		// does not list them, the OS does.
+		t.Run(tt.name+" in its own group", func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				a, p := claudePane("claude")
+				h, s := newWorld(t, a, p)
+				h.children[agentPGID] = []herdr.Process{
+					{PID: agentPGID + 1, Argv: []string{"bun", "/x/backlog", "mcp", "start"}},
+					{PID: 9000, Argv: tt.child},
+				}
+				assertLeftAlone(t, h, s, "running "+strings.Join(tt.child, " "))
+			})
+		})
+	}
+}
+
+// assertLeftAlone sweeps once the pane has been quiet long enough and fails
+// unless it got no action, for reason.
+func assertLeftAlone(t *testing.T, h *fakeHerdr, s sweep.Sweeper, reason string) {
+	t.Helper()
+	run(t, s)
+	time.Sleep(2 * time.Hour)
+	out, err := s.Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(h.events) != 0 {
+		t.Fatalf("acted: %q", h.events)
+	}
+	if len(out) != 1 || out[0].Asleep || out[0].Reason != reason {
+		t.Fatalf("outcome = %+v, want reason %q", out, reason)
+	}
+}
+
+func TestMCPAndLanguageServersDoNotKeepAPaneAwake(t *testing.T) {
+	servers := [][]string{
+		{"/Users/me/.local/bin/codebase-memory-mcp"},
+		{"npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"},
+		{"uvx", "mcp-server-fetch"},
+		{"/usr/local/bin/typescript-language-server", "--stdio"},
+		{"pyright-langserver", "--stdio"},
+		{"gopls"},
+		{"rust-analyzer"},
+	}
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		var procs []herdr.Process
+		for i, argv := range servers {
+			procs = append(procs, herdr.Process{PID: agentPGID + 10 + i, Argv: argv})
+		}
+		p.Foreground = append(p.Foreground, procs...)
+		h, s := newWorld(t, a, p)
+		h.children[agentPGID] = procs
+		putAsleep(t, s)
+		if len(h.events) == 0 || h.events[0] != "SIGTERM 4242" {
+			t.Fatalf("not put asleep: %q", h.events)
+		}
+	})
+}
+
+func TestScreenIsSavedBeforeSIGTERMAndItsPathShownBeforeThePrefill(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude", "--model", "opus")
+		h, s := newWorld(t, a, p)
+		b, q := a, p // a second pane: captures must not overwrite each other
+		b.PaneID, q.ForegroundGroupID = "w1:p2", 5000
+		q.Foreground = []herdr.Process{{PID: 5000, Argv: []string{"claude"}}}
+		h.agents, h.procs[b.PaneID] = append(h.agents, b), q
+		h.screens[a.PaneID] = "> draft I never sent\n"
+		h.screens[b.PaneID] = "other pane\n"
+
+		putAsleep(t, s)
+
+		var shown []string
+		for _, e := range h.events {
+			if strings.HasPrefix(e, "send_text "+a.PaneID+" ") {
+				shown = append(shown, strings.TrimPrefix(e, "send_text "+a.PaneID+" "))
+			}
+		}
+		if len(shown) != 2 || shown[1] != "claude --resume "+sessionID+" --model opus" {
+			t.Fatalf("pane %s got %q, want a notice then the prefill", a.PaneID, shown)
+		}
+		notice, ok := strings.CutPrefix(shown[0], " echo 'herdr-idle: screen saved to ")
+		path, ok2 := strings.CutSuffix(notice, "'\r")
+		if !ok || !ok2 {
+			t.Fatalf("notice = %q, want an echo of the capture path, run with Enter", shown[0])
+		}
+		if got, ok := h.onDiskAtTerm[path]; !ok || got != h.screens[a.PaneID] {
+			t.Fatalf("at SIGTERM, %s held %q (exists %v); captures: %q", path, got, ok, h.onDiskAtTerm)
+		}
+		if filepath.Dir(path) != s.CaptureDir {
+			t.Errorf("capture %s is outside %s", path, s.CaptureDir)
+		}
+		var other int
+		for f, c := range h.onDiskAtTerm {
+			if f != path && c == h.screens[b.PaneID] {
+				other++
+			}
+		}
+		if other != 1 {
+			t.Errorf("the second pane has no capture of its own: %q", h.onDiskAtTerm)
+		}
+	})
+}
+
+func TestNoSIGTERMWhenTheScreenCannotBeSaved(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		h.readErr = errors.New("agent.read failed")
+		run(t, s)
+		time.Sleep(2 * time.Hour)
+		out, err := s.Run(t.Context())
+		if !errors.Is(err, h.readErr) {
+			t.Errorf("err = %v, want the read error", err)
+		}
+		if len(h.events) != 0 || out[0].Asleep {
+			t.Fatalf("acted without a capture: %q", h.events)
+		}
+	})
+}
+
+func TestAgentAliveAfterSIGTERMIsLeftAlone(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		h.ignoreTERM = map[int]bool{agentPGID: true}
+		run(t, s)
+		time.Sleep(2 * time.Hour)
+
+		out, err := s.Run(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Only Terminate exists on the signaler: no SIGKILL can be sent.
+		if !slices.Equal(h.events, []string{"SIGTERM 4242"}) {
+			t.Fatalf("events = %q, want one SIGTERM and nothing else", h.events)
+		}
+		want := "agent still running 30s after SIGTERM, left alone"
+		if out[0].Asleep || out[0].Reason != want {
+			t.Fatalf("outcome = %+v, want reason %q", out[0], want)
+		}
+
+		time.Sleep(time.Hour)
+		out, err = s.Run(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(h.events) != 1 {
+			t.Fatalf("signalled again: %q", h.events)
+		}
+		if out[0].Reason != "ignored SIGTERM, left alone" {
+			t.Fatalf("outcome = %+v", out[0])
 		}
 	})
 }

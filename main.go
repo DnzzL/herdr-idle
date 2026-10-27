@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -76,8 +77,11 @@ func runSweep(ctx context.Context, getenv func(string) string, stdout io.Writer)
 	s := sweep.Sweeper{
 		Herdr:     herdr.New(socket),
 		Signaler:  groupSignaler{},
+		Processes: psProcesses{},
 		StatePath: filepath.Join(stateDir, stateFile(socket)),
-		IdleAfter: idleAfter,
+		// Screens saved before sleep, one directory per session like the state.
+		CaptureDir: filepath.Join(stateDir, strings.TrimSuffix(stateFile(socket), ".json")+"-screens"),
+		IdleAfter:  idleAfter,
 	}
 	outcomes, err := s.Run(ctx)
 	for _, o := range outcomes {

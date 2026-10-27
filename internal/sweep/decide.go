@@ -13,6 +13,9 @@ func whyAwake(a herdr.Agent, ps paneState, now time.Time, idleAfter time.Duratio
 	if !ps.AsleepAt.IsZero() {
 		return "asleep"
 	}
+	if ps.TermIgnored {
+		return "ignored SIGTERM, left alone"
+	}
 	if a.Focused {
 		return "focused"
 	}

@@ -19,6 +19,9 @@ type paneState struct {
 	LastChangeSeq uint64    `json:"last_change_seq"`
 	LastStatus    string    `json:"last_status"`
 	LastChangeAt  time.Time `json:"last_change_at"`
+	// TermIgnored is set when the agent outlived SIGTERM; it is not
+	// signalled again until its state changes.
+	TermIgnored bool `json:"term_ignored,omitempty"`
 
 	// Set once the pane is asleep.
 	Kind       string    `json:"kind,omitempty"`
