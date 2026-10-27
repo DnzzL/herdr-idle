@@ -56,7 +56,9 @@ func observe(prev state, agents []herdr.Agent, now time.Time) state {
 			continue // still asleep
 		}
 		if woken || !seen || ps.LastChangeSeq != a.StateChangeSeq || ps.LastStatus != a.Status {
-			ps = paneState{LastChangeSeq: a.StateChangeSeq, LastStatus: a.Status, LastChangeAt: now}
+			// The capture outlives the wake, so closing the pane still
+			// removes it; the next sleep overwrites it.
+			ps = paneState{LastChangeSeq: a.StateChangeSeq, LastStatus: a.Status, LastChangeAt: now, CapturePath: ps.CapturePath}
 		}
 		next[a.PaneID] = ps
 	}

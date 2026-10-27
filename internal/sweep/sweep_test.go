@@ -1043,6 +1043,27 @@ func TestClosingAnAsleepPaneRemovesItsScreenCapture(t *testing.T) {
 	})
 }
 
+func TestClosingAWokenPaneRemovesItsScreenCapture(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		putAsleep(t, s)
+		captures, _ := filepath.Glob(filepath.Join(s.CaptureDir, "*"))
+		if len(captures) != 1 {
+			t.Fatalf("captures = %q, want one", captures)
+		}
+		h.wake(pane)
+		run(t, s) // notices the wake
+
+		if err := s.PaneClosed(t.Context(), pane); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(captures[0]); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("capture of a woken pane left behind after it closed: %v", err)
+		}
+	})
+}
+
 // restart is a herdr server restart: every plugin report and label is gone,
 // the pane comes back as a fresh shell (new pid) and nothing is resumed.
 func (f *fakeHerdr) restart(paneID string) {
