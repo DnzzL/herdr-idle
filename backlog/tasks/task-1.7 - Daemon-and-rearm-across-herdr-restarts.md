@@ -1,10 +1,11 @@
 ---
 id: TASK-1.7
 title: Daemon and rearm across herdr restarts
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-27 09:07'
-updated_date: '2026-10-27 09:20'
+updated_date: '2026-10-27 09:40'
 labels:
   - ready-for-agent
 dependencies:
@@ -29,6 +30,7 @@ A `[[startup]]` hook starts one daemon per herdr session (lock keyed on the sess
 - [ ] #2 Sweeps run every `interval_minutes`; the daemon exits once the plugin is disabled or removed
 - [ ] #3 After a herdr restart, asleep panes are listed as `asleep` again with the prefill, and no agent is started
 - [ ] #4 Covered by tests through the sweep/rearm seam with the fake clock; no bare goroutines
+- [ ] #5 Concurrent writers of the state file (daemon sweep, pane-closed hook, idle-now) cannot resurrect or lose entries
 <!-- AC:END -->
 
 ## Implementation Notes
