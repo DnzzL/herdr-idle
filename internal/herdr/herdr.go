@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -75,6 +76,9 @@ func (e *Error) Error() string {
 	return "herdr " + e.Method + ": " + e.Code + ": " + e.Message
 }
 
+// ErrUnreachable means no herdr server listens on the socket.
+var ErrUnreachable = errors.New("herdr server unreachable")
+
 // Client talks to one herdr server. Every call dials the socket afresh.
 type Client struct {
 	socket string
@@ -136,6 +140,25 @@ func (c *Client) ReportMetadata(ctx context.Context, r MetadataReport) error {
 	return c.call(ctx, "pane.report_metadata", r, nil)
 }
 
+// PluginEnabled reports whether the plugin id is installed and enabled.
+func (c *Client) PluginEnabled(ctx context.Context, id string) (bool, error) {
+	var res struct {
+		Plugins []struct {
+			PluginID string `json:"plugin_id"`
+			Enabled  bool   `json:"enabled"`
+		} `json:"plugins"`
+	}
+	if err := c.call(ctx, "plugin.list", map[string]string{"plugin_id": id}, &res); err != nil {
+		return false, err
+	}
+	for _, p := range res.Plugins {
+		if p.PluginID == id {
+			return p.Enabled, nil
+		}
+	}
+	return false, nil
+}
+
 // SendText types text into the pane without pressing Enter.
 func (c *Client) SendText(ctx context.Context, paneID, text string) error {
 	return c.call(ctx, "pane.send_text", map[string]string{"pane_id": paneID, "text": text}, nil)
@@ -145,7 +168,7 @@ func (c *Client) call(ctx context.Context, method string, params, out any) error
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "unix", c.socket)
 	if err != nil {
-		return fmt.Errorf("herdr %s: %w", method, err)
+		return fmt.Errorf("herdr %s: %w: %v", method, ErrUnreachable, err)
 	}
 	defer conn.Close()
 	if deadline, ok := ctx.Deadline(); ok {

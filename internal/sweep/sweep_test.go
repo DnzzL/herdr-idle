@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -30,12 +31,18 @@ const (
 // Every call that changes something lands in events, in order, alongside the
 // signals sent by fakeSignaler.
 type fakeHerdr struct {
-	agents  []herdr.Agent
-	procs   map[string]herdr.ProcessInfo
-	exitAt  map[string]time.Time // pane → when its terminated agent is gone
-	events  []string
-	reports []herdr.AgentReport
-	meta    []herdr.MetadataReport
+	mu     sync.Mutex // sweeps may run side by side
+	agents []herdr.Agent
+	procs  map[string]herdr.ProcessInfo
+	exitAt map[string]time.Time // pane → when its terminated agent is gone
+	// shellOnly panes run no agent at all: herdr lists them only while a
+	// plugin report holds them.
+	shellOnly map[string]bool
+	// shellFreeAt is when a pane's shell takes the foreground back.
+	shellFreeAt map[string]time.Time
+	events      []string
+	reports     []herdr.AgentReport
+	meta        []herdr.MetadataReport
 	// typed is everything sent to each pane's terminal, in order; a line
 	// run with Enter (a command, not a prefill) lands only here.
 	typed map[string][]string
@@ -53,6 +60,8 @@ type fakeHerdr struct {
 }
 
 func (f *fakeHerdr) ReadRecent(_ context.Context, paneID string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.screens[paneID], f.readErr
 }
 
@@ -62,13 +71,15 @@ func (f *fakeHerdr) ReadRecent(_ context.Context, paneID string) (string, error)
 const herdrLag = 500 * time.Millisecond
 
 func (f *fakeHerdr) Snapshot(context.Context) ([]herdr.Agent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	var out []herdr.Agent
 	for _, a := range f.agents {
 		if r, ok := f.lastReport(a.PaneID); ok {
 			out = append(out, herdr.Agent{PaneID: a.PaneID, Agent: r.Agent, Status: r.State})
 			continue
 		}
-		if !f.agentGone(a.PaneID) {
+		if !f.agentGone(a.PaneID) && !f.shellOnly[a.PaneID] {
 			out = append(out, a)
 		}
 	}
@@ -90,12 +101,17 @@ func (f *fakeHerdr) herdrNoticedExit(paneID string) bool {
 }
 
 func (f *fakeHerdr) ProcessInfo(_ context.Context, paneID string) (herdr.ProcessInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	p, ok := f.procs[paneID]
 	if !ok {
 		return herdr.ProcessInfo{}, fmt.Errorf("no pane %s", paneID)
 	}
 	if f.agentGone(paneID) {
 		return herdr.ProcessInfo{ShellPID: p.ShellPID, ForegroundGroupID: p.ShellPID}, nil
+	}
+	if at, ok := f.shellFreeAt[paneID]; ok && !time.Now().Before(at) {
+		p.ForegroundGroupID, p.Foreground = p.ShellPID, nil
 	}
 	return p, nil
 }
@@ -106,6 +122,8 @@ func (f *fakeHerdr) agentGone(paneID string) bool {
 }
 
 func (f *fakeHerdr) ReportAgent(_ context.Context, r herdr.AgentReport) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if _, ok := f.exitAt[r.PaneID]; ok && !f.herdrNoticedExit(r.PaneID) {
 		return nil // accepted, then wiped when the detector catches up
 	}
@@ -115,12 +133,16 @@ func (f *fakeHerdr) ReportAgent(_ context.Context, r herdr.AgentReport) error {
 }
 
 func (f *fakeHerdr) ReportMetadata(_ context.Context, r herdr.MetadataReport) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.events = append(f.events, "report_metadata "+r.PaneID)
 	f.meta = append(f.meta, r)
 	return nil
 }
 
 func (f *fakeHerdr) SendText(_ context.Context, paneID, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if _, ok := f.exitAt[paneID]; ok && !f.agentGone(paneID) {
 		f.events = append(f.events, "send_text while the agent still runs")
 		return nil
@@ -135,13 +157,24 @@ func (f *fakeHerdr) SendText(_ context.Context, paneID, text string) error {
 
 // fakeSignaler stands in for the OS: SIGTERM to a pane's foreground group
 // ends the agent 2s later, handing the terminal back to the shell.
-type fakeSignaler struct{ h *fakeHerdr }
+type fakeSignaler struct {
+	h *fakeHerdr
+	// onTerminate, if set, runs as the signal is sent.
+	onTerminate func()
+}
 
 func (s *fakeSignaler) Children(_ context.Context, pid int) ([]herdr.Process, error) {
+	s.h.mu.Lock()
+	defer s.h.mu.Unlock()
 	return s.h.children[pid], nil
 }
 
 func (s *fakeSignaler) Terminate(pgid int) error {
+	if s.onTerminate != nil {
+		s.onTerminate()
+	}
+	s.h.mu.Lock()
+	defer s.h.mu.Unlock()
 	s.h.events = append(s.h.events, fmt.Sprintf("SIGTERM %d", pgid))
 	files, _ := filepath.Glob(filepath.Join(s.h.captureDir, "*"))
 	for _, f := range files {
@@ -1006,6 +1039,192 @@ func TestClosingAnAsleepPaneRemovesItsScreenCapture(t *testing.T) {
 		}
 		if _, err := os.Stat(captures[0]); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("capture still there after the pane closed: %v", err)
+		}
+	})
+}
+
+// restart is a herdr server restart: every plugin report and label is gone,
+// the pane comes back as a fresh shell (new pid) and nothing is resumed.
+func (f *fakeHerdr) restart(paneID string) {
+	f.reports = slices.DeleteFunc(f.reports, func(r herdr.AgentReport) bool { return r.PaneID == paneID })
+	f.meta = nil
+	f.procs[paneID] = herdr.ProcessInfo{ShellPID: shellPID + 1, ForegroundGroupID: shellPID + 1}
+	delete(f.exitAt, paneID)
+	f.shellOnly = map[string]bool{paneID: true}
+}
+
+func TestRearmAfterHerdrRestartRelistsAndPrefillsWithoutStartingTheAgent(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude", "--model", "opus")
+		h, s := newWorld(t, a, p)
+		putAsleep(t, s)
+
+		asleep := h.typed[pane]
+		h.restart(pane)
+		h.events, h.typed[pane] = nil, nil
+		out, err := s.Run(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Scrollback is gone with the restart: the capture file is the only
+		// record left, so its path is shown again before the prefill.
+		if !slices.Equal(h.typed[pane], asleep) {
+			t.Errorf("typed after restart %q, want as when put asleep %q", h.typed[pane], asleep)
+		}
+		want := []string{
+			"report_agent " + pane,
+			"report_metadata " + pane,
+			"send_text " + pane + " claude --resume " + sessionID + " --model opus",
+		}
+		if !slices.Equal(h.events, want) {
+			t.Fatalf("events:\n got %q\nwant %q", h.events, want)
+		}
+		m := h.meta[0]
+		if m.DisplayAgent != "claude" || m.StateLabels["idle"] != "asleep" || m.AppliesToSource != "dnzzl.idle" {
+			t.Errorf("report_metadata = %+v", m)
+		}
+		if r, _ := h.lastReport(pane); r.Agent != "maki" || r.Source != "dnzzl.idle" || r.State != "idle" {
+			t.Errorf("report_agent = %+v", r)
+		}
+		if len(out) != 1 || out[0].PaneID != pane || out[0].Agent != "claude" || out[0].Reason != "rearmed" {
+			t.Errorf("outcomes = %+v", out)
+		}
+
+		// Listed again: later sweeps leave it be, and it still counts as asleep.
+		h.events = nil
+		time.Sleep(3 * time.Hour)
+		out, err = s.Run(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(h.events) != 0 || len(out) != 1 || out[0].Reason != "asleep" {
+			t.Fatalf("rearmed twice or lost: %q %+v", h.events, out)
+		}
+	})
+}
+
+func TestRearmWaitsForTheShellPrompt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		putAsleep(t, s)
+
+		h.restart(pane)
+		// The restored shell is still starting: its rc file owns the
+		// terminal for a few seconds.
+		h.procs[pane] = herdr.ProcessInfo{ShellPID: shellPID + 1, ForegroundGroupID: 777}
+		h.shellFreeAt = map[string]time.Time{pane: time.Now().Add(3 * time.Second)}
+		h.events = nil
+		run(t, s)
+		want := "send_text " + pane + " claude --resume " + sessionID
+		if len(h.events) != 3 || h.events[2] != want {
+			t.Fatalf("events %q", h.events)
+		}
+	})
+}
+
+func TestRearmLeavesABusyShellForALaterSweep(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		putAsleep(t, s)
+
+		h.restart(pane)
+		h.procs[pane] = herdr.ProcessInfo{ShellPID: shellPID + 1, ForegroundGroupID: 777}
+		h.events = nil
+		out, err := s.Run(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(h.events) != 0 || len(out) != 1 || out[0].Reason != "shell busy, rearm on a later sweep" {
+			t.Fatalf("events %q, outcome %+v", h.events, out)
+		}
+
+		h.procs[pane] = herdr.ProcessInfo{ShellPID: shellPID + 1, ForegroundGroupID: shellPID + 1}
+		run(t, s)
+		if len(h.events) != 3 {
+			t.Fatalf("not rearmed once the shell was free: %q", h.events)
+		}
+	})
+}
+
+// addPane adds a second quiet claude pane to the world, its agent in group
+// pgid.
+func addPane(h *fakeHerdr, id string, pgid int) {
+	a, p := claudePane("claude")
+	a.PaneID = id
+	p.ForegroundGroupID = pgid
+	p.Foreground[1].PID = pgid
+	h.agents = append(h.agents, a)
+	h.procs[id] = p
+}
+
+func TestPaneClosedDuringASweepStaysForgotten(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		putAsleep(t, s)
+
+		// A second pane is being put asleep by a sweep; while that sweep
+		// waits for the agent to exit, herdr closes the first pane.
+		const other = "w1:p2"
+		addPane(h, other, 5151)
+		run(t, s)
+		time.Sleep(61 * time.Minute)
+		var wg sync.WaitGroup
+		s.Signaler.(*fakeSignaler).onTerminate = func() {
+			wg.Go(func() {
+				if err := s.PaneClosed(t.Context(), pane); err != nil {
+					t.Errorf("pane closed: %v", err)
+				}
+			})
+		}
+		run(t, s)
+		wg.Wait()
+
+		st := readState(t, s)
+		if st[pane] != nil {
+			t.Errorf("closed pane resurrected by the sweep: %v", st[pane])
+		}
+		if st[other]["asleep_at"] == nil {
+			t.Errorf("pane put asleep meanwhile lost: %v", st[other])
+		}
+	})
+}
+
+func TestSweepsSideBySidePutAPaneAsleepOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		run(t, s)
+		time.Sleep(61 * time.Minute)
+
+		// The daemon's sweep and an idle-now sweep (another process, so
+		// its own config file reader) start together.
+		var wg sync.WaitGroup
+		for range 2 {
+			s := s
+			s.Config = &config.File{Path: s.Config.Path}
+			wg.Go(func() {
+				if _, err := s.Run(t.Context()); err != nil {
+					t.Errorf("sweep: %v", err)
+				}
+			})
+		}
+		wg.Wait()
+
+		var sigterms int
+		for _, e := range h.events {
+			if strings.HasPrefix(e, "SIGTERM") {
+				sigterms++
+			}
+		}
+		if sigterms != 1 {
+			t.Errorf("SIGTERM sent %d times: %q", sigterms, h.events)
+		}
+		if st := readState(t, s); st[pane]["asleep_at"] == nil {
+			t.Errorf("asleep pane lost from the state: %v", st[pane])
 		}
 	})
 }

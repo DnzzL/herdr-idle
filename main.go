@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/DnzzL/herdr-idle/internal/config"
 	"github.com/DnzzL/herdr-idle/internal/herdr"
@@ -30,6 +31,8 @@ const usage = `herdr-idle — put idle agent panes asleep
 
 Usage:
   herdr-idle sweep         Put every qualifying agent pane asleep, once
+  herdr-idle daemon        Sweep every interval_minutes until the plugin is
+                           disabled or herdr stops (herdr startup hook)
   herdr-idle preview       List every agent pane and why it would or would not
                            sleep; changes nothing (--hold: wait for Enter)
   herdr-idle config        Open config.toml in $VISUAL or $EDITOR, creating it
@@ -71,6 +74,8 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdin i
 		outcomes, err := s.Run(ctx)
 		printOutcomes(stdout, outcomes, err)
 		return err
+	case len(args) == 1 && args[0] == "daemon":
+		return runDaemon(ctx, getenv, stdout)
 	case len(args) == 1 && args[0] == "preview":
 		s, err := newSweeper(getenv)
 		if err != nil {
@@ -125,6 +130,35 @@ func newSweeper(getenv func(string) string) (sweep.Sweeper, error) {
 		CaptureDir: filepath.Join(stateDir, strings.TrimSuffix(stateFile(socket), ".json")+"-screens"),
 		Config:     &config.File{Path: cfgPath},
 	}, nil
+}
+
+// runDaemon is herdr's startup hook, run on every server start. A second
+// daemon for the same session leaves quietly.
+func runDaemon(ctx context.Context, getenv func(string) string, stdout io.Writer) error {
+	s, err := newSweeper(getenv)
+	if err != nil {
+		return err
+	}
+	// herdr pipes stdout and stops reading when its server stops, but the
+	// daemon outlives a quick restart and keeps serving the new server: a
+	// log line must not kill it with SIGPIPE.
+	signal.Ignore(syscall.SIGPIPE)
+	d := sweep.Daemon{
+		Sweeper: s,
+		Plugin:  herdr.New(getenv("HERDR_SOCKET_PATH")),
+		Log: func(outcomes []sweep.Outcome, err error) {
+			fmt.Fprintln(stdout, time.Now().Format(time.RFC3339))
+			printOutcomes(stdout, outcomes, err)
+			if err != nil {
+				fmt.Fprintln(stdout, "error:", err)
+			}
+		},
+	}
+	err = d.Run(ctx)
+	if errors.Is(err, sweep.ErrAlreadyRunning) {
+		_, err = fmt.Fprintln(stdout, "herdr-idle:", err)
+	}
+	return err
 }
 
 // printOutcomes prints one line per agent pane.

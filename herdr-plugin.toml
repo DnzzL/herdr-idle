@@ -8,6 +8,9 @@ platforms = ["linux", "macos"]
 [[build]]
 command = ["sh", "scripts/install.sh"]
 
+[[startup]]
+command = ["./bin/herdr-idle", "daemon"]
+
 [[events]]
 on = "pane.closed"
 command = ["./bin/herdr-idle", "pane-closed"]
