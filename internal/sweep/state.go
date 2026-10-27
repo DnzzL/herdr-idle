@@ -28,15 +28,20 @@ type paneState struct {
 	SessionRef string    `json:"session_ref,omitempty"`
 	ResumeArgv []string  `json:"resume_argv,omitempty"`
 	AsleepAt   time.Time `json:"asleep_at,omitzero"`
+	// CapturePath is the file holding the pane's screen from before it was
+	// put asleep; it goes when the pane is closed.
+	CapturePath string `json:"capture_path,omitempty"`
 }
 
 // state maps pane id to that pane's state.
 type state map[string]paneState
 
 // observe returns the state for this snapshot: asleep panes are kept as they
-// are; every other agent pane keeps its clock while its seq and status hold,
-// and starts it at now when they change or when the pane is new. Panes no
-// longer in the snapshot are forgotten.
+// are, even when herdr no longer lists them; every other agent pane keeps its
+// clock while its seq and status hold, and starts it at now when they change
+// or when the pane is new. An asleep pane listed under a real kind again was
+// woken: herdr has dropped the stand-in report, so it is awake again with a
+// clock starting now. Other panes no longer in the snapshot are forgotten.
 func observe(prev state, agents []herdr.Agent, now time.Time) state {
 	next := state{}
 	for id, ps := range prev {
@@ -45,11 +50,12 @@ func observe(prev state, agents []herdr.Agent, now time.Time) state {
 		}
 	}
 	for _, a := range agents {
-		if _, asleep := next[a.PaneID]; asleep {
-			continue
-		}
 		ps, seen := prev[a.PaneID]
-		if !seen || ps.LastChangeSeq != a.StateChangeSeq || ps.LastStatus != a.Status {
+		woken := !ps.AsleepAt.IsZero()
+		if woken && a.Agent == standInKind {
+			continue // still asleep
+		}
+		if woken || !seen || ps.LastChangeSeq != a.StateChangeSeq || ps.LastStatus != a.Status {
 			ps = paneState{LastChangeSeq: a.StateChangeSeq, LastStatus: a.Status, LastChangeAt: now}
 		}
 		next[a.PaneID] = ps
