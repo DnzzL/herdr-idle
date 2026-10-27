@@ -64,9 +64,13 @@ list` and the socket API show asleep panes as agent `maki`, from source
 `dnzzl.idle`. Once you wake the agent, the pane is listed under its real kind
 again, and gets a full quiet period before it can sleep again.
 
-After a herdr restart, asleep panes stay asleep: they come back listed as
-`asleep` and prefilled, and no agent starts on its own. The scrollback is gone
-after a restart; the capture file is then the only record of the last screen.
+Checks run in a background process that herdr starts with its server, one per
+herdr session. It stops when the plugin is disabled or removed, or herdr stops.
+
+After a herdr restart, asleep panes stay asleep: within half a minute they come
+back listed as `asleep` and prefilled, and no agent starts on its own. The
+scrollback is gone after a restart; the capture file is then the only record of
+the last screen, and its path is printed again.
 
 To make asleep panes stand out, style `state_text` in
 `~/.config/herdr/config.toml`:
@@ -161,6 +165,12 @@ are never put asleep. When herdr adds or changes a kind, this table follows.
   starting with a space (zsh `HIST_IGNORE_SPACE`, bash `HISTCONTROL=ignorespace`).
 - Once a woken pane is awake again, its capture file is no longer tracked:
   closing the pane leaves it behind until the pane sleeps again.
+- After a herdr restart, an asleep pane whose shell is busy (a command typed
+  before it was restored as asleep) is restored once the shell is free.
+- An asleep pane herdr does not bring back after a restart keeps its state
+  entry and capture file.
+- When the background process outlives a quick herdr restart, its log is lost
+  from then on: herdr no longer reads it.
 
 ## Development
 
