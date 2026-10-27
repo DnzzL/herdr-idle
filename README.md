@@ -47,10 +47,12 @@ Then the plugin:
 1. saves the agent's recent screen to a file in the plugin state directory;
 2. stops the agent and its MCP servers with `SIGTERM`. An agent still running
    30 seconds later is left alone, never killed, and not stopped again until
-   its state changes;
+   its state changes; if it exits later, the pane is put asleep at the next
+   check;
 3. once the shell is back at its prompt, prints where the screen capture is
-   (an `echo` it runs), then types the resume command on the input line,
-   without pressing Enter.
+   (an `echo` it runs), then types `cd` to the agent's directory and the
+   resume command on the input line, without pressing Enter. It types them
+   once per shell: only a new shell, after a herdr restart, gets them again.
 
 The resume command continues the same session, in the same directory, with the
 flags you started the agent with (permission mode, model…). Enter wakes the
@@ -163,8 +165,6 @@ are never put asleep. When herdr adds or changes a kind, this table follows.
 
 - The capture-path `echo` lands in shell history unless the shell skips lines
   starting with a space (zsh `HIST_IGNORE_SPACE`, bash `HISTCONTROL=ignorespace`).
-- Once a woken pane is awake again, its capture file is no longer tracked:
-  closing the pane leaves it behind until the pane sleeps again.
 - After a herdr restart, an asleep pane whose shell is busy (a command typed
   before it was restored as asleep) is restored once the shell is free.
 - An asleep pane herdr does not bring back after a restart keeps its state
