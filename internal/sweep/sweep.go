@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/DnzzL/herdr-idle/internal/herdr"
@@ -101,6 +103,24 @@ func (s Sweeper) Run(ctx context.Context) ([]Outcome, error) {
 		}
 		outcomes = append(outcomes, o)
 	}
+	// After a herdr restart our reports are gone: asleep panes are plain
+	// shells herdr no longer lists. Report and prefill them again.
+	listed := map[string]bool{}
+	for _, a := range agents {
+		listed[a.PaneID] = true
+	}
+	for _, id := range slices.Sorted(maps.Keys(next)) {
+		ps := next[id]
+		if ps.AsleepAt.IsZero() || listed[id] {
+			continue
+		}
+		reason, err := s.rearm(ctx, id, ps)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("pane %s: %w", id, err))
+			reason = "error: " + err.Error()
+		}
+		outcomes = append(outcomes, Outcome{PaneID: id, Agent: ps.Kind, Reason: reason})
+	}
 	if err := saveState(s.StatePath, next); err != nil {
 		errs = append(errs, err)
 	}
@@ -163,26 +183,60 @@ func (s Sweeper) putAsleep(ctx context.Context, a herdr.Agent) ([]string, string
 
 	// The agent is stopped: from here on the pane must end up prefilled
 	// whatever herdr does with the report, or the session is hard to find.
-	listed, err := s.reportAsleep(ctx, a.PaneID, deadline)
+	listed, err := s.markAsleep(ctx, a.PaneID, a.Agent, argv, deadline)
 	if err != nil {
-		return nil, "", err
-	}
-	if err := s.Herdr.ReportMetadata(ctx, herdr.MetadataReport{
-		PaneID:          a.PaneID,
-		Source:          source,
-		AppliesToSource: source,
-		DisplayAgent:    a.Agent,
-		StateLabels:     map[string]string{"idle": "asleep"},
-	}); err != nil {
-		return nil, "", err
-	}
-	if err := s.Herdr.SendText(ctx, a.PaneID, shellJoin(argv)); err != nil {
 		return nil, "", err
 	}
 	if !listed {
 		return argv, "put asleep, but herdr did not keep it in the agent list", nil
 	}
 	return argv, "put asleep", nil
+}
+
+// rearm marks an asleep pane herdr no longer lists, once its shell owns the
+// terminal. It never starts the agent: the resume command is only typed.
+func (s Sweeper) rearm(ctx context.Context, paneID string, ps paneState) (string, error) {
+	deadline := time.Now().Add(exitTimeout)
+	free, err := s.waitForShell(ctx, paneID, deadline)
+	if herr, ok := errors.AsType[*herdr.Error](err); ok && herr.Code == "pane_not_found" {
+		return "pane not found, rearm on a later sweep", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if !free {
+		return "shell busy, rearm on a later sweep", nil
+	}
+	listed, err := s.markAsleep(ctx, paneID, ps.Kind, ps.ResumeArgv, deadline)
+	if err != nil {
+		return "", err
+	}
+	if !listed {
+		return "rearmed, but herdr did not keep it in the agent list", nil
+	}
+	return "rearmed", nil
+}
+
+// markAsleep reports the pane as an asleep agent of kind and prefills its
+// shell with argv. It reports whether herdr kept the pane listed.
+func (s Sweeper) markAsleep(ctx context.Context, paneID, kind string, argv []string, deadline time.Time) (bool, error) {
+	listed, err := s.reportAsleep(ctx, paneID, deadline)
+	if err != nil {
+		return false, err
+	}
+	if err := s.Herdr.ReportMetadata(ctx, herdr.MetadataReport{
+		PaneID:          paneID,
+		Source:          source,
+		AppliesToSource: source,
+		DisplayAgent:    kind,
+		StateLabels:     map[string]string{"idle": "asleep"},
+	}); err != nil {
+		return false, err
+	}
+	if err := s.Herdr.SendText(ctx, paneID, shellJoin(argv)); err != nil {
+		return false, err
+	}
+	return listed, nil
 }
 
 // waitForShell polls until the pane's shell owns the terminal again, so the

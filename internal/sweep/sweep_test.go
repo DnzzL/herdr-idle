@@ -29,12 +29,17 @@ const (
 // Every call that changes something lands in events, in order, alongside the
 // signals sent by fakeSignaler.
 type fakeHerdr struct {
-	agents  []herdr.Agent
-	procs   map[string]herdr.ProcessInfo
-	exitAt  map[string]time.Time // pane → when its terminated agent is gone
-	events  []string
-	reports []herdr.AgentReport
-	meta    []herdr.MetadataReport
+	agents []herdr.Agent
+	procs  map[string]herdr.ProcessInfo
+	exitAt map[string]time.Time // pane → when its terminated agent is gone
+	// shellOnly panes run no agent at all: herdr lists them only while a
+	// plugin report holds them.
+	shellOnly map[string]bool
+	// shellFreeAt is when a pane's shell takes the foreground back.
+	shellFreeAt map[string]time.Time
+	events      []string
+	reports     []herdr.AgentReport
+	meta        []herdr.MetadataReport
 }
 
 // herdrLag is how long after an agent exits herdr's process detector
@@ -49,7 +54,7 @@ func (f *fakeHerdr) Snapshot(context.Context) ([]herdr.Agent, error) {
 			out = append(out, herdr.Agent{PaneID: a.PaneID, Agent: r.Agent, Status: r.State})
 			continue
 		}
-		if !f.agentGone(a.PaneID) {
+		if !f.agentGone(a.PaneID) && !f.shellOnly[a.PaneID] {
 			out = append(out, a)
 		}
 	}
@@ -77,6 +82,9 @@ func (f *fakeHerdr) ProcessInfo(_ context.Context, paneID string) (herdr.Process
 	}
 	if f.agentGone(paneID) {
 		return herdr.ProcessInfo{ShellPID: p.ShellPID, ForegroundGroupID: p.ShellPID}, nil
+	}
+	if at, ok := f.shellFreeAt[paneID]; ok && !time.Now().Before(at) {
+		p.ForegroundGroupID, p.Foreground = p.ShellPID, nil
 	}
 	return p, nil
 }
@@ -482,4 +490,104 @@ func recordCapture(t *testing.T, s sweep.Sweeper, paneID string) string {
 		t.Fatal(err)
 	}
 	return capture
+}
+
+// restart is a herdr server restart: every plugin report and label is gone,
+// the pane comes back as a fresh shell (new pid) and nothing is resumed.
+func (f *fakeHerdr) restart(paneID string) {
+	f.reports = slices.DeleteFunc(f.reports, func(r herdr.AgentReport) bool { return r.PaneID == paneID })
+	f.meta = nil
+	f.procs[paneID] = herdr.ProcessInfo{ShellPID: shellPID + 1, ForegroundGroupID: shellPID + 1}
+	delete(f.exitAt, paneID)
+	f.shellOnly = map[string]bool{paneID: true}
+}
+
+func TestRearmAfterHerdrRestartRelistsAndPrefillsWithoutStartingTheAgent(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude", "--model", "opus")
+		h, s := newWorld(t, a, p)
+		putAsleep(t, s)
+
+		h.restart(pane)
+		h.events = nil
+		out, err := s.Run(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		want := []string{
+			"report_agent " + pane,
+			"report_metadata " + pane,
+			"send_text " + pane + " claude --resume " + sessionID + " --model opus",
+		}
+		if !slices.Equal(h.events, want) {
+			t.Fatalf("events:\n got %q\nwant %q", h.events, want)
+		}
+		m := h.meta[0]
+		if m.DisplayAgent != "claude" || m.StateLabels["idle"] != "asleep" || m.AppliesToSource != "dnzzl.idle" {
+			t.Errorf("report_metadata = %+v", m)
+		}
+		if r, _ := h.lastReport(pane); r.Agent != "maki" || r.Source != "dnzzl.idle" || r.State != "idle" {
+			t.Errorf("report_agent = %+v", r)
+		}
+		if len(out) != 1 || out[0].PaneID != pane || out[0].Agent != "claude" || out[0].Reason != "rearmed" {
+			t.Errorf("outcomes = %+v", out)
+		}
+
+		// Listed again: later sweeps leave it be, and it still counts as asleep.
+		h.events = nil
+		time.Sleep(3 * time.Hour)
+		out, err = s.Run(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(h.events) != 0 || len(out) != 1 || out[0].Reason != "asleep" {
+			t.Fatalf("rearmed twice or lost: %q %+v", h.events, out)
+		}
+	})
+}
+
+func TestRearmWaitsForTheShellPrompt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		putAsleep(t, s)
+
+		h.restart(pane)
+		// The restored shell is still starting: its rc file owns the
+		// terminal for a few seconds.
+		h.procs[pane] = herdr.ProcessInfo{ShellPID: shellPID + 1, ForegroundGroupID: 777}
+		h.shellFreeAt = map[string]time.Time{pane: time.Now().Add(3 * time.Second)}
+		h.events = nil
+		run(t, s)
+		want := "send_text " + pane + " claude --resume " + sessionID
+		if len(h.events) != 3 || h.events[2] != want {
+			t.Fatalf("events %q", h.events)
+		}
+	})
+}
+
+func TestRearmLeavesABusyShellForALaterSweep(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		putAsleep(t, s)
+
+		h.restart(pane)
+		h.procs[pane] = herdr.ProcessInfo{ShellPID: shellPID + 1, ForegroundGroupID: 777}
+		h.events = nil
+		out, err := s.Run(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(h.events) != 0 || len(out) != 1 || out[0].Reason != "shell busy, rearm on a later sweep" {
+			t.Fatalf("events %q, outcome %+v", h.events, out)
+		}
+
+		h.procs[pane] = herdr.ProcessInfo{ShellPID: shellPID + 1, ForegroundGroupID: shellPID + 1}
+		run(t, s)
+		if len(h.events) != 3 {
+			t.Fatalf("not rearmed once the shell was free: %q", h.events)
+		}
+	})
 }
