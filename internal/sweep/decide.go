@@ -5,14 +5,18 @@ import (
 	"slices"
 	"time"
 
+	"github.com/DnzzL/herdr-idle/internal/config"
 	"github.com/DnzzL/herdr-idle/internal/herdr"
 )
 
 // whyAwake returns why the pane must stay awake, or "" when every rule lets
 // it be put asleep.
-func whyAwake(a herdr.Agent, ps paneState, now time.Time, idleAfter time.Duration) string {
+func whyAwake(a herdr.Agent, ps paneState, now time.Time, cfg config.Config) string {
 	if !ps.AsleepAt.IsZero() {
 		return "asleep"
+	}
+	if cfg.Excludes(a.PaneID) || (a.Session != nil && cfg.Excludes(a.Session.Value)) {
+		return "excluded"
 	}
 	if a.Focused {
 		return "focused"
@@ -30,8 +34,8 @@ func whyAwake(a herdr.Agent, ps paneState, now time.Time, idleAfter time.Duratio
 	if r.resume(a.Session.Value) == nil {
 		return fmt.Sprintf("session ref %q cannot be resumed", a.Session.Value)
 	}
-	if quiet := now.Sub(ps.LastChangeAt); quiet < idleAfter {
-		return fmt.Sprintf("quiet for %s, needs %s", quiet.Truncate(time.Minute), idleAfter)
+	if quiet := now.Sub(ps.LastChangeAt); quiet < cfg.IdleAfter {
+		return fmt.Sprintf("quiet for %s, needs %s", quiet.Truncate(time.Minute), cfg.IdleAfter)
 	}
 	return ""
 }

@@ -14,6 +14,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/DnzzL/herdr-idle/internal/config"
 	"github.com/DnzzL/herdr-idle/internal/herdr"
 	"github.com/DnzzL/herdr-idle/internal/sweep"
 )
@@ -156,7 +157,7 @@ func newWorld(t *testing.T, a herdr.Agent, p herdr.ProcessInfo) (*fakeHerdr, swe
 		Herdr:     h,
 		Signaler:  &fakeSignaler{h: h},
 		StatePath: filepath.Join(t.TempDir(), "state.json"),
-		IdleAfter: 60 * time.Minute,
+		Config:    &config.File{Path: filepath.Join(t.TempDir(), "config.toml")},
 	}
 	return h, s
 }
@@ -210,7 +211,7 @@ func TestQuietClaudePaneIsPutAsleep(t *testing.T) {
 func putAsleep(t *testing.T, s sweep.Sweeper) {
 	t.Helper()
 	run(t, s)
-	time.Sleep(s.IdleAfter + time.Minute)
+	time.Sleep(61 * time.Minute)
 	run(t, s)
 }
 
@@ -583,4 +584,197 @@ func recordCapture(t *testing.T, s sweep.Sweeper, paneID string) string {
 		t.Fatal(err)
 	}
 	return capture
+}
+
+// writeConfig replaces the config file the sweeper reads.
+func writeConfig(t *testing.T, s sweep.Sweeper, toml string) {
+	t.Helper()
+	if err := os.WriteFile(s.Config.Path, []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExcludedPaneOrSessionIsNeverPutAsleep(t *testing.T) {
+	for _, id := range []string{pane, sessionID} {
+		t.Run(id, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				a, p := claudePane("claude")
+				h, s := newWorld(t, a, p)
+				writeConfig(t, s, `exclude = ["w9:p9", "`+id+`"]`)
+				run(t, s)
+				time.Sleep(3 * time.Hour)
+				out, err := s.Run(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(h.events) != 0 || out[0].Reason != "excluded" {
+					t.Fatalf("events %q, outcome %+v", h.events, out)
+				}
+			})
+		})
+	}
+}
+
+func TestDryRunSaysWhatItWouldDoAndDoesNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude", "--model", "opus")
+		h, s := newWorld(t, a, p)
+		writeConfig(t, s, "dry_run = true\n")
+		run(t, s)
+		time.Sleep(61 * time.Minute)
+		out, err := s.Run(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(h.events) != 0 {
+			t.Fatalf("dry run acted: %q", h.events)
+		}
+		want := "would be put asleep, resume with: claude --resume " + sessionID + " --model opus"
+		if out[0].Asleep || out[0].Reason != want {
+			t.Fatalf("outcome %+v, want reason %q", out[0], want)
+		}
+
+		// Turning dry_run off acts on the next sweep: the clock kept running.
+		writeConfig(t, s, "dry_run = false\n")
+		run(t, s)
+		if len(h.events) != 4 {
+			t.Fatalf("events after dry_run off: %q", h.events)
+		}
+	})
+}
+
+func TestConfigChangeAppliesOnTheNextSweep(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		writeConfig(t, s, "# partial file: the rest stays default\nidle_minutes = 90 # longer\n")
+		run(t, s)
+		time.Sleep(61 * time.Minute)
+		run(t, s)
+		if len(h.events) != 0 {
+			t.Fatalf("asleep after 61m with idle_minutes = 90: %q", h.events)
+		}
+
+		writeConfig(t, s, "idle_minutes = 30\n")
+		run(t, s)
+		if len(h.events) != 4 {
+			t.Fatalf("not asleep after 61m with idle_minutes = 30: %q", h.events)
+		}
+	})
+}
+
+func TestInvalidConfigKeepsThePreviousOneAndReportsEveryProblem(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		writeConfig(t, s, "dry_run = true\n")
+		run(t, s)
+
+		writeConfig(t, s, `idle_minutes = "soon"
+dry_run = true
+dryrun = false
+exclude = "w1:p1"
+interval_minutes = 0
+`)
+		time.Sleep(61 * time.Minute)
+		_, err := s.Run(t.Context())
+		if len(h.events) != 0 {
+			t.Fatalf("invalid file dropped the previous dry_run: %q", h.events)
+		}
+		if err == nil {
+			t.Fatal("invalid config not reported")
+		}
+		for _, want := range []string{
+			"line 1: idle_minutes", "line 3: dryrun: unknown key",
+			"line 4: exclude", "line 5: interval_minutes",
+		} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error lacks %q:\n%v", want, err)
+			}
+		}
+		if strings.Contains(err.Error(), "line 2") {
+			t.Errorf("valid line reported: %v", err)
+		}
+	})
+}
+
+func TestInvalidConfigWithNoPreviousOneDoesNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		run(t, s)
+		time.Sleep(61 * time.Minute)
+		// A fresh process (one-shot sweep, new daemon) has no previous
+		// config: falling back to defaults could turn a dry run real.
+		s.Config = &config.File{Path: s.Config.Path}
+		writeConfig(t, s, "dry_run = ture\n")
+		out, err := s.Run(t.Context())
+		if err == nil || len(out) != 0 || len(h.events) != 0 {
+			t.Fatalf("err %v, outcomes %+v, events %q", err, out, h.events)
+		}
+	})
+}
+
+func TestTemplateConfigMeansDefaults(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		writeConfig(t, s, config.Template)
+		putAsleep(t, s)
+		if len(h.events) != 4 {
+			t.Fatalf("events: %q", h.events)
+		}
+	})
+}
+
+func TestExcludeArrayCanSpanLines(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		writeConfig(t, s, `exclude = [
+  "w9:p9", # a loop agent
+  'w1:p1',
+]
+`)
+		putAsleep(t, s)
+		if len(h.events) != 0 {
+			t.Fatalf("excluded pane acted on: %q", h.events)
+		}
+	})
+}
+
+func TestPreviewGivesEveryAgentPaneItsReasonAndChangesNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		focused := a
+		focused.PaneID, focused.Focused = "w1:p2", true
+		h.agents = append(h.agents, focused)
+		run(t, s)
+		time.Sleep(61 * time.Minute)
+
+		out, err := s.Preview(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []sweep.Outcome{
+			{PaneID: pane, Agent: "claude", Reason: "would be put asleep, resume with: claude --resume " + sessionID},
+			{PaneID: "w1:p2", Agent: "claude", Reason: "focused"},
+		}
+		if !slices.Equal(out, want) || len(h.events) != 0 {
+			t.Fatalf("preview:\n got %+v\nwant %+v\nevents %q", out, want, h.events)
+		}
+
+		// A preview leaves the quiet clocks alone: on a fresh state file
+		// the first real sweep still starts them.
+		h2, s2 := newWorld(t, a, p)
+		if _, err := s2.Preview(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(61 * time.Minute)
+		run(t, s2)
+		if len(h2.events) != 0 {
+			t.Fatalf("preview started the quiet clock: %q", h2.events)
+		}
+	})
 }
