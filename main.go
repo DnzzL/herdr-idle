@@ -25,8 +25,9 @@ var version = "dev"
 const usage = `herdr-idle — put idle agent panes asleep
 
 Usage:
-  herdr-idle sweep     Put every qualifying agent pane asleep, once
-  herdr-idle version   Print the version
+  herdr-idle sweep         Put every qualifying agent pane asleep, once
+  herdr-idle pane-closed   Forget the pane in HERDR_PANE_ID (herdr pane.closed hook)
+  herdr-idle version       Print the version
 `
 
 // idleAfter is how long a pane must stay quiet before it is put asleep.
@@ -59,6 +60,8 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout 
 		return err
 	case "sweep":
 		return runSweep(ctx, getenv, stdout)
+	case "pane-closed":
+		return runPaneClosed(ctx, getenv)
 	default:
 		return errUsage
 	}
@@ -84,6 +87,25 @@ func runSweep(ctx context.Context, getenv func(string) string, stdout io.Writer)
 		fmt.Fprintf(stdout, "%s\t%s\t%s\n", o.PaneID, o.Agent, o.Reason)
 	}
 	return err
+}
+
+// runPaneClosed is herdr's pane.closed hook: herdr passes the closed pane in
+// HERDR_PANE_ID.
+func runPaneClosed(ctx context.Context, getenv func(string) string) error {
+	socket := getenv("HERDR_SOCKET_PATH")
+	if socket == "" {
+		return errors.New("HERDR_SOCKET_PATH is not set: run inside herdr")
+	}
+	paneID := getenv("HERDR_PANE_ID")
+	if paneID == "" {
+		return errors.New("HERDR_PANE_ID is not set: run from herdr's pane.closed hook")
+	}
+	stateDir, err := stateDir(getenv)
+	if err != nil {
+		return err
+	}
+	s := sweep.Sweeper{StatePath: filepath.Join(stateDir, stateFile(socket))}
+	return s.PaneClosed(ctx, paneID)
 }
 
 // stateDir is the plugin state directory herdr hands its plugin commands, or
