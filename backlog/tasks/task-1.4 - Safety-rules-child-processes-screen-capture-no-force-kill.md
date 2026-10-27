@@ -1,11 +1,11 @@
 ---
 id: TASK-1.4
 title: 'Safety rules: child processes, screen capture, no force kill'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-27 09:06'
-updated_date: '2026-10-27 09:35'
+updated_date: '2026-10-27 09:49'
 labels:
   - ready-for-agent
 dependencies:
@@ -26,8 +26,22 @@ A pane whose agent has a child process other than its MCP or language servers (s
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A pane with a non-MCP/LSP child process gets no SIGTERM
-- [ ] #2 A capture file exists before SIGTERM is sent, and its path is shown in the asleep pane
-- [ ] #3 An agent alive 30s after SIGTERM is left alone: no report, no prefill, no SIGKILL, logged
-- [ ] #4 Covered by sweep-seam tests with the fake clock
+- [x] #1 A pane with a non-MCP/LSP child process gets no SIGTERM
+- [x] #2 A capture file exists before SIGTERM is sent, and its path is shown in the asleep pane
+- [x] #3 An agent alive 30s after SIGTERM is left alone: no report, no prefill, no SIGKILL, logged
+- [x] #4 Covered by sweep-seam tests with the fake clock
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Merged. Finding: Claude runs tool commands in their own process group, invisible to pane.process_info; rule also inspects the agent direct children via ps (new Processes seam, Sweeper.CaptureDir, Herdr.ReadRecent). MCP/LSP recognised by file-name words (mcp, lsp, langserver, language-server, @modelcontextprotocol, gopls, rust-analyzer, clangd, tsserver, jdtls).
+
+Capture notice printed via a leading-space echo + Enter before the prefill (may hit history outside zsh). term_ignored flag avoids a second SIGTERM until state changes. Not tested: Linux ps, real Claude with a background shell. Known gap: capture file kept after wake then close.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Busy panes skipped (fg group + direct children), screen saved before SIGTERM with path shown, ignored SIGTERM left alone without SIGKILL. Verified via sweep-seam tests and a disposable herdr session.
+<!-- SECTION:FINAL_SUMMARY:END -->
