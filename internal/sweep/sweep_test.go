@@ -31,7 +31,7 @@ const (
 // Every call that changes something lands in events, in order, alongside the
 // signals sent by fakeSignaler.
 type fakeHerdr struct {
-	mu sync.Mutex // sweeps may run side by side
+	mu     sync.Mutex // sweeps may run side by side
 	agents []herdr.Agent
 	procs  map[string]herdr.ProcessInfo
 	exitAt map[string]time.Time // pane → when its terminated agent is gone
