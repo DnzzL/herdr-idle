@@ -28,12 +28,13 @@ var version = "dev"
 const usage = `herdr-idle — put idle agent panes asleep
 
 Usage:
-  herdr-idle sweep     Put every qualifying agent pane asleep, once
-  herdr-idle preview   List every agent pane and why it would or would not
-                       sleep; changes nothing (--hold: wait for Enter)
-  herdr-idle config    Open config.toml in $VISUAL or $EDITOR, creating it
-                       with commented defaults
-  herdr-idle version   Print the version
+  herdr-idle sweep         Put every qualifying agent pane asleep, once
+  herdr-idle preview       List every agent pane and why it would or would not
+                           sleep; changes nothing (--hold: wait for Enter)
+  herdr-idle config        Open config.toml in $VISUAL or $EDITOR, creating it
+                           with commented defaults
+  herdr-idle pane-closed   Forget the pane in HERDR_PANE_ID (herdr pane.closed hook)
+  herdr-idle version       Print the version
 `
 
 // pluginID must match the id in herdr-plugin.toml.
@@ -94,6 +95,8 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdin i
 		return nil
 	case len(args) == 1 && args[0] == "config":
 		return editConfig(ctx, getenv, stdin, stdout)
+	case len(args) == 1 && args[0] == "pane-closed":
+		return runPaneClosed(ctx, getenv)
 	default:
 		return errUsage
 	}
@@ -199,6 +202,25 @@ func configPath(getenv func(string) string) (string, error) {
 		dir = filepath.Join(base, "herdr", "plugins", "config", pluginID)
 	}
 	return filepath.Join(dir, "config.toml"), nil
+}
+
+// runPaneClosed is herdr's pane.closed hook: herdr passes the closed pane in
+// HERDR_PANE_ID.
+func runPaneClosed(ctx context.Context, getenv func(string) string) error {
+	socket := getenv("HERDR_SOCKET_PATH")
+	if socket == "" {
+		return errors.New("HERDR_SOCKET_PATH is not set: run inside herdr")
+	}
+	paneID := getenv("HERDR_PANE_ID")
+	if paneID == "" {
+		return errors.New("HERDR_PANE_ID is not set: run from herdr's pane.closed hook")
+	}
+	stateDir, err := stateDir(getenv)
+	if err != nil {
+		return err
+	}
+	s := sweep.Sweeper{StatePath: filepath.Join(stateDir, stateFile(socket))}
+	return s.PaneClosed(ctx, paneID)
 }
 
 // stateDir is the plugin state directory herdr hands its plugin commands, or

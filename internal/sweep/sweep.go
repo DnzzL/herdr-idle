@@ -8,6 +8,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"time"
 
 	"github.com/DnzzL/herdr-idle/internal/config"
@@ -29,8 +31,8 @@ type Signaler interface {
 	Terminate(pgid int) error
 }
 
-// Sweeper holds what a sweep needs. The zero value is not usable: every field
-// must be set.
+// Sweeper holds what a sweep needs. The zero value is not usable: Run needs
+// every field set, PaneClosed only StatePath.
 type Sweeper struct {
 	Herdr    Herdr
 	Signaler Signaler
@@ -123,6 +125,29 @@ func (s Sweeper) sweep(ctx context.Context, preview bool) ([]Outcome, error) {
 		errs = append(errs, err)
 	}
 	return outcomes, errors.Join(errs...)
+}
+
+// PaneClosed forgets a pane herdr has closed: its state entry and its capture
+// file are removed. An unknown pane is not an error.
+func (s Sweeper) PaneClosed(ctx context.Context, paneID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	st, err := loadState(s.StatePath)
+	if err != nil {
+		return err
+	}
+	ps, ok := st[paneID]
+	if !ok {
+		return nil
+	}
+	if ps.CapturePath != "" {
+		if err := os.Remove(ps.CapturePath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("remove capture: %w", err)
+		}
+	}
+	delete(st, paneID)
+	return saveState(s.StatePath, st)
 }
 
 // putAsleep stops the pane's agent and leaves its shell prefilled with the
