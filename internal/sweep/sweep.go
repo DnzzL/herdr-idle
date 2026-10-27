@@ -157,14 +157,47 @@ func (s Sweeper) sweep(ctx context.Context, preview bool) ([]Outcome, error) {
 	if preview {
 		return outcomes, errors.Join(errs...)
 	}
-	// After a herdr restart our reports are gone: asleep panes are plain
-	// shells herdr no longer lists. Report and prefill them again.
+	rearmed, err := s.rearmUnlisted(ctx, agents, next)
+	outcomes = append(outcomes, rearmed...)
+	errs = append(errs, err)
+	if err := saveState(s.StatePath, next); err != nil {
+		errs = append(errs, err)
+	}
+	return outcomes, errors.Join(errs...)
+}
+
+// rearmOnly rearms the asleep panes herdr no longer lists, and does nothing
+// else: the daemon runs it between sweeps, so a herdr restart it outlives is
+// noticed within a check.
+func (s Sweeper) rearmOnly(ctx context.Context) ([]Outcome, error) {
+	unlock, err := lockState(ctx, s.StatePath)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	st, err := loadState(s.StatePath)
+	if err != nil {
+		return nil, err
+	}
+	agents, err := s.Herdr.Snapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.rearmUnlisted(ctx, agents, st)
+}
+
+// rearmUnlisted rearms every asleep pane in st that herdr does not list:
+// after a herdr restart our reports are gone and asleep panes are plain
+// shells. It returns one outcome per pane it tried.
+func (s Sweeper) rearmUnlisted(ctx context.Context, agents []herdr.Agent, st state) ([]Outcome, error) {
 	listed := map[string]bool{}
 	for _, a := range agents {
 		listed[a.PaneID] = true
 	}
-	for _, id := range slices.Sorted(maps.Keys(next)) {
-		ps := next[id]
+	var outcomes []Outcome
+	var errs []error
+	for _, id := range slices.Sorted(maps.Keys(st)) {
+		ps := st[id]
 		if ps.AsleepAt.IsZero() || listed[id] {
 			continue
 		}
@@ -174,9 +207,6 @@ func (s Sweeper) sweep(ctx context.Context, preview bool) ([]Outcome, error) {
 			reason = "error: " + err.Error()
 		}
 		outcomes = append(outcomes, Outcome{PaneID: id, Agent: ps.Kind, Reason: reason})
-	}
-	if err := saveState(s.StatePath, next); err != nil {
-		errs = append(errs, err)
 	}
 	return outcomes, errors.Join(errs...)
 }

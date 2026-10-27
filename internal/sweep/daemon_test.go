@@ -242,6 +242,33 @@ func TestDaemonRestartResetsQuietClocks(t *testing.T) {
 	})
 }
 
+func TestDaemonThatOutlivesAHerdrRestartRearmsWithinACheck(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		d, _ := newDaemon(t, s, 10)
+		startDaemon(t, d)
+		time.Sleep(61 * time.Minute) // asleep at the 60m sweep
+		synctest.Wait()
+
+		// herdr restarts between two checks: the daemon never sees it
+		// down, and the new server's daemon left since this one holds
+		// the lock.
+		h.mu.Lock()
+		h.restart(pane)
+		h.events = nil
+		h.mu.Unlock()
+		time.Sleep(35 * time.Second)
+		synctest.Wait()
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		want := "send_text " + pane + " claude --resume " + sessionID
+		if len(h.events) != 3 || h.events[2] != want {
+			t.Fatalf("not rearmed within a check: %q", h.events)
+		}
+	})
+}
+
 func TestDaemonRearmsAsleepPanesAtStart(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		a, p := claudePane("claude")

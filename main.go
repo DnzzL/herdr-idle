@@ -139,6 +139,10 @@ func runDaemon(ctx context.Context, getenv func(string) string, stdout io.Writer
 	if err != nil {
 		return err
 	}
+	// herdr pipes stdout and stops reading when its server stops, but the
+	// daemon outlives a quick restart and keeps serving the new server: a
+	// log line must not kill it with SIGPIPE.
+	signal.Ignore(syscall.SIGPIPE)
 	d := sweep.Daemon{
 		Sweeper: s,
 		Plugin:  herdr.New(getenv("HERDR_SOCKET_PATH")),

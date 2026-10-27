@@ -41,7 +41,8 @@ type Daemon struct {
 //
 // On start every quiet clock restarts, since the agents may have worked
 // unseen while no daemon ran, and the first sweep runs at once: it rearms
-// the panes put asleep before a herdr restart.
+// the panes put asleep before a herdr restart. Between sweeps, every check
+// also rearms, for a restart this daemon outlived.
 func (d Daemon) Run(ctx context.Context) error {
 	unlock, err := lock(ctx, d.Sweeper.StatePath+".daemon.lock", false)
 	if errors.Is(err, errLocked) {
@@ -80,6 +81,17 @@ func (d Daemon) Run(ctx context.Context) error {
 			log(nil, err) // herdr is there but did not answer: try again later
 		case !enabled:
 			return nil
+		case time.Now().Before(next):
+			// A herdr restart this daemon outlived (it never saw herdr
+			// down) left the new server's daemon locked out: rearm now
+			// rather than at the next sweep.
+			outcomes, err := d.Sweeper.rearmOnly(ctx)
+			if ctx.Err() != nil {
+				return nil
+			}
+			if len(outcomes) > 0 || err != nil {
+				log(outcomes, err)
+			}
 		}
 	}
 }
