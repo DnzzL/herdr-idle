@@ -476,10 +476,27 @@ func (s Sweeper) capture(ctx context.Context, paneID herdr.PaneID) (string, erro
 		return "", fmt.Errorf("save screen: %w", err)
 	}
 	path := s.capturePath(paneID)
-	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(squeezeBlanks(text)), 0o600); err != nil {
 		return "", fmt.Errorf("save screen: %w", err)
 	}
 	return path, nil
+}
+
+// squeezeBlanks trims each line's trailing spaces and keeps one blank line
+// of each run: agents pad their screen down to the input box, and printed
+// back as is the padding fills the pane, pushing the conversation out of view.
+func squeezeBlanks(text string) string {
+	var b strings.Builder
+	blank := false
+	for line := range strings.Lines(text) {
+		line = strings.TrimRight(line, " \t\r\n")
+		if line == "" && blank {
+			continue
+		}
+		blank = line == ""
+		b.WriteString(line + "\n")
+	}
+	return b.String()
 }
 
 // capturePath is the pane's capture file. Pane ids look like w1:p2; keep

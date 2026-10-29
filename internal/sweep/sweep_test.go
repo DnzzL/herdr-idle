@@ -1206,6 +1206,26 @@ func TestScreenIsSavedBeforeSIGTERMAndItsPathShownBeforeThePrefill(t *testing.T)
 	})
 }
 
+// Agents pad their screen down to the input box: printed back as is, the
+// padding fills the pane and pushes the conversation out of view.
+func TestSavedScreenSqueezesBlankRuns(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		h.screens[a.PaneID] = "> remember pelican\n\nOK.  \n" + strings.Repeat("   \n", 15) + "──────\n❯\n"
+
+		putAsleep(t, s)
+
+		var got []string
+		for _, c := range h.onDiskAtTerm {
+			got = append(got, c)
+		}
+		if want := "> remember pelican\n\nOK.\n\n──────\n❯\n"; len(got) != 1 || got[0] != want {
+			t.Fatalf("saved %q, want %q", got, want)
+		}
+	})
+}
+
 func TestNoSIGTERMWhenTheScreenCannotBeSaved(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		a, p := claudePane("claude")
