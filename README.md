@@ -24,7 +24,8 @@ The install fetches a prebuilt, checksum-verified binary for macOS or Linux
 the checksum doesn't match, or the binary doesn't run, it builds from source
 instead, which needs [Go](https://go.dev/dl/).
 
-Once installed, a background check runs every 10 minutes in each herdr session.
+Once installed, a background check runs every 10 minutes in each herdr session,
+from the first time you switch panes; no herdr restart needed.
 With no config file, the defaults below apply.
 
 ## What an asleep pane looks like
@@ -69,8 +70,11 @@ list` and the socket API show asleep panes as agent `maki`, from source
 `dnzzl.idle`. Once you wake the agent, the pane is listed under its real kind
 again, and gets a full quiet period before it can sleep again.
 
-Checks run in a background process that herdr starts with its server, one per
-herdr session. It stops when the plugin is disabled or removed, or herdr stops.
+Checks run in a background process, one per herdr session. herdr starts it
+with its server; after an install it starts the first time you switch panes or
+run an action. It stops when the plugin is disabled or removed, or herdr
+stops, and moves to a new binary on its own after an update. It logs to
+`~/.local/state/herdr/plugins/dnzzl.idle/daemon.log`.
 
 After a herdr restart, asleep panes stay asleep: within half a minute they come
 back listed as `asleep` and prefilled, and no agent starts on its own. The
@@ -173,8 +177,6 @@ are never put asleep. When herdr adds or changes a kind, this table follows.
   before it was restored as asleep) is restored once the shell is free.
 - An asleep pane herdr does not bring back after a restart keeps its state
   entry and capture file until the next pane, tab or workspace is closed.
-- When the background process outlives a quick herdr restart, its log is lost
-  from then on: herdr no longer reads it.
 
 ## Development
 

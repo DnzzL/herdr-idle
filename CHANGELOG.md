@@ -25,6 +25,9 @@ What changed for someone using the plugin. Dates are release dates.
   once, and come back listed and prefilled.
 - `config.toml` sets `idle_minutes` (120), `interval_minutes` (10), `exclude`
   and `dry_run`. Changes apply on the next check, without a restart.
+- Starts working right after install, from the first pane switch, without a
+  herdr restart; picks up a new version on its own after an update. Its log
+  is `daemon.log` in the plugin state directory.
 - Actions: `preview` lists every agent pane and why it would or would not
   sleep; `idle-now` runs a check now; `config` opens the config file.
 - Installs a prebuilt, checksum-verified binary on macOS and Linux

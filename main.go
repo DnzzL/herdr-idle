@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -39,6 +40,8 @@ Usage:
                            with commented defaults
   herdr-idle forget-closed Forget panes herdr no longer has (herdr pane, tab and
                            workspace close hook)
+  herdr-idle ensure-daemon Start the daemon unless one runs (herdr pane focus
+                           hook); sweep, preview, config and forget-closed do too
   herdr-idle version       Print the version
 `
 
@@ -60,7 +63,17 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, getenv func(string) string, stdin io.Reader, stdout io.Writer) error {
+	// herdr starts the daemon only with its server: every other plugin
+	// command starts it when none runs, so a fresh install sweeps without a
+	// herdr restart.
+	if len(args) > 0 && slices.Contains([]string{"sweep", "preview", "config", "forget-closed", "ensure-daemon"}, args[0]) {
+		if err := ensureDaemon(getenv); err != nil {
+			fmt.Fprintln(os.Stderr, "herdr-idle: start daemon:", err)
+		}
+	}
 	switch {
+	case len(args) == 1 && args[0] == "ensure-daemon":
+		return nil
 	case len(args) == 1 && args[0] == "version":
 		_, err := fmt.Fprintln(stdout, version)
 		return err
@@ -153,22 +166,85 @@ func runDaemon(ctx context.Context, getenv func(string) string, stdout io.Writer
 	// daemon outlives a quick restart and keeps serving the new server: a
 	// log line must not kill it with SIGPIPE.
 	signal.Ignore(syscall.SIGPIPE)
+	// The daemon logs to its own file: one started by ensureDaemon has no
+	// output herdr reads.
+	logPath := filepath.Join(filepath.Dir(s.StatePath), "daemon.log")
+	logFile, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	defer logFile.Close()
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
 	d := sweep.Daemon{
 		Sweeper: s,
 		Plugin:  herdr.New(getenv("HERDR_SOCKET_PATH")),
 		Log: func(outcomes []sweep.Outcome, err error) {
-			fmt.Fprintln(stdout, time.Now().Format(time.RFC3339))
-			printOutcomes(stdout, outcomes, err)
+			fmt.Fprintln(logFile, time.Now().Format(time.RFC3339))
+			printOutcomes(logFile, outcomes, err)
 			if err != nil {
-				fmt.Fprintln(stdout, "error:", err)
+				fmt.Fprintln(logFile, "error:", err)
 			}
 		},
+		Upgraded: binaryReplaced(exe),
+		Reexec: func() error {
+			return syscall.Exec(exe, os.Args, append(os.Environ(), reexecEnv+"=1"))
+		},
+		KeepClocks: getenv(reexecEnv) == "1",
 	}
 	err = d.Run(ctx)
 	if errors.Is(err, sweep.ErrAlreadyRunning) {
 		_, err = fmt.Fprintln(stdout, "herdr-idle:", err)
 	}
 	return err
+}
+
+// reexecEnv marks a daemon that re-executed itself on a new binary.
+const reexecEnv = "HERDR_IDLE_REEXEC"
+
+// binaryReplaced reports whether the file at exe changed since it last
+// returned true, or since it was made; a binary it cannot stat has not.
+func binaryReplaced(exe string) func() bool {
+	stamp := func() string {
+		st, err := os.Stat(exe)
+		if err != nil {
+			return ""
+		}
+		return fmt.Sprintf("%d-%d", st.ModTime().UnixNano(), st.Size())
+	}
+	last := stamp()
+	return func() bool {
+		now := stamp()
+		if now == "" || now == last {
+			return false
+		}
+		last = now
+		return true
+	}
+}
+
+// ensureDaemon starts a daemon for this herdr session unless one runs. It
+// runs in a session of its own with no pipe back to herdr: herdr counts a
+// plugin command as running until its output closes.
+func ensureDaemon(getenv func(string) string) error {
+	_, statePath, err := sessionPaths(getenv)
+	if err != nil {
+		return err
+	}
+	return sweep.EnsureDaemon(statePath, func() error {
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		cmd := exec.Command(exe, "daemon")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		return cmd.Process.Release()
+	})
 }
 
 // printOutcomes prints one line per agent pane.

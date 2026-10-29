@@ -289,3 +289,86 @@ func TestDaemonRearmsAsleepPanesAtStart(t *testing.T) {
 		}
 	})
 }
+
+func TestEnsureDaemonStartsOneOnlyWhenNoneRuns(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		_, s := newWorld(t, a, p)
+		starts := 0
+		start := func() error { starts++; return nil }
+
+		if err := sweep.EnsureDaemon(s.StatePath, start); err != nil || starts != 1 {
+			t.Fatalf("no daemon: starts = %d, err = %v, want 1 start", starts, err)
+		}
+
+		d, _ := newDaemon(t, s, 10)
+		startDaemon(t, d)
+		synctest.Wait()
+		if err := sweep.EnsureDaemon(s.StatePath, start); err != nil || starts != 1 {
+			t.Fatalf("daemon running: starts = %d, err = %v, want no new start", starts, err)
+		}
+	})
+}
+
+func TestReplacedBinaryReexecutesTheDaemon(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		_, s := newWorld(t, a, p)
+		d, _ := newDaemon(t, s, 10)
+		var mu sync.Mutex
+		replaced, reexecs := false, 0
+		d.Upgraded = func() bool { mu.Lock(); defer mu.Unlock(); return replaced }
+		// A real re-exec replaces the process; a failed one returns.
+		d.Reexec = func() error { mu.Lock(); defer mu.Unlock(); reexecs++; return errors.New("exec failed") }
+		done := startDaemon(t, d)
+
+		time.Sleep(5 * time.Minute)
+		synctest.Wait()
+		mu.Lock()
+		n := reexecs
+		replaced = true
+		mu.Unlock()
+		if n != 0 {
+			t.Fatalf("re-executed %d times with the same binary", n)
+		}
+		time.Sleep(31 * time.Second)
+		synctest.Wait()
+		mu.Lock()
+		n = reexecs
+		mu.Unlock()
+		if n != 1 {
+			t.Fatalf("re-executed %d times within a check of the binary changing, want 1", n)
+		}
+		if err, ok := returned(done); ok {
+			t.Fatalf("daemon stopped after a failed re-exec: %v", err)
+		}
+	})
+}
+
+func TestReexecutedDaemonKeepsQuietClocks(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		h, s := newWorld(t, a, p)
+		first, _ := newDaemon(t, s, 10)
+		ctx, stop := context.WithCancel(t.Context())
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			if err := first.Run(ctx); err != nil {
+				t.Errorf("first daemon: %v", err)
+			}
+		})
+		time.Sleep(50 * time.Minute)
+		stop()
+		wg.Wait()
+
+		// The same daemon on a new binary: nothing ran unwatched.
+		second, _ := newDaemon(t, s, 10)
+		second.KeepClocks = true
+		startDaemon(t, second)
+		time.Sleep(11 * time.Minute)
+		synctest.Wait()
+		if n := sigterms(h); n != 1 {
+			t.Fatalf("quiet clock restarted across a re-exec: %q", h.events)
+		}
+	})
+}

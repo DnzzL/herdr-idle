@@ -3,6 +3,7 @@ package sweep
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/DnzzL/herdr-idle/internal/config"
@@ -32,6 +33,15 @@ type Daemon struct {
 	// Log receives each sweep's outcomes and error, and failed plugin
 	// checks. Nil drops them.
 	Log func([]Outcome, error)
+	// Upgraded, if set, reports whether the daemon's binary was replaced
+	// since it last asked; the daemon then calls Reexec. Reexec replaces
+	// the process and returns only on failure, when the daemon carries on
+	// with the old build until the binary changes again.
+	Upgraded func() bool
+	Reexec   func() error
+	// KeepClocks is set by a re-executed daemon: it never stopped watching,
+	// so the quiet clocks hold.
+	KeepClocks bool
 }
 
 // Run serves the session until ctx ends, the plugin is disabled or removed,
@@ -39,8 +49,8 @@ type Daemon struct {
 // file, so per herdr session: a second one returns ErrAlreadyRunning at once,
 // without sweeping.
 //
-// On start every quiet clock restarts, since the agents may have worked
-// unseen while no daemon ran, and the first sweep runs at once: it rearms
+// On start every quiet clock restarts, unless KeepClocks, since the agents
+// may have worked unseen while no daemon ran, and the first sweep runs at once: it rearms
 // the panes put asleep before a herdr restart. Between sweeps, every check
 // also rearms, for a restart this daemon outlived.
 func (d Daemon) Run(ctx context.Context) error {
@@ -52,8 +62,10 @@ func (d Daemon) Run(ctx context.Context) error {
 		return err
 	}
 	defer unlock()
-	if err := resetClocks(ctx, d.Sweeper.StatePath); err != nil {
-		return err
+	if !d.KeepClocks {
+		if err := resetClocks(ctx, d.Sweeper.StatePath); err != nil {
+			return err
+		}
 	}
 	log := d.Log
 	if log == nil {
@@ -72,6 +84,11 @@ func (d Daemon) Run(ctx context.Context) error {
 		}
 		if err := sleep(ctx, min(checkEvery, time.Until(next))); err != nil {
 			return nil
+		}
+		if d.Upgraded != nil && d.Upgraded() {
+			// The lock goes with the old image: its descriptor is
+			// close-on-exec.
+			log(nil, fmt.Errorf("binary replaced, re-executing: %w", d.Reexec()))
 		}
 		enabled, err := d.Plugin.PluginEnabled(ctx, PluginID)
 		switch {
@@ -94,6 +111,21 @@ func (d Daemon) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// EnsureDaemon calls start unless a daemon already serves the herdr
+// session whose state file is statePath. Two callers racing may both
+// start one: the daemon lock lets only one of them run.
+func EnsureDaemon(statePath string, start func() error) error {
+	unlock, err := lock(context.Background(), statePath+".daemon.lock", false)
+	if errors.Is(err, errLocked) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	unlock()
+	return start()
 }
 
 // interval is the configured time between sweeps. The sweep has already

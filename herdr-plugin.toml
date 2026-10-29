@@ -11,6 +11,12 @@ command = ["sh", "scripts/install.sh"]
 [[startup]]
 command = ["./bin/herdr-idle", "daemon"]
 
+# herdr runs [[startup]] only with its server: any focus change starts the
+# daemon after an install, without a herdr restart.
+[[events]]
+on = "pane.focused"
+command = ["./bin/herdr-idle", "ensure-daemon"]
+
 # Closing a tab or workspace sends no pane.closed for the panes in it.
 [[events]]
 on = "pane.closed"

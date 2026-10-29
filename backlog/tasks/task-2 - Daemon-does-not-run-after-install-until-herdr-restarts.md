@@ -1,9 +1,10 @@
 ---
 id: TASK-2
 title: Daemon does not run after install until herdr restarts
-status: To Do
+status: Done
 assignee: []
-created_date: '2026-10-27 17:16'
+created_date: 2026-10-27 17:16
+updated_date: '2026-10-29T14:40:00Z'
 labels:
   - needs-triage
 dependencies: []
@@ -21,6 +22,12 @@ Open question: how to start it without a restart. Candidates: idle-now/preview/c
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 After herdr plugin link or enable, sweeps run without a herdr restart, or the user is told plainly that a restart is needed
-- [ ] #2 At most one daemon per herdr session still holds (daemon lock)
+- [x] #1 After herdr plugin link or enable, sweeps run without a herdr restart, or the user is told plainly that a restart is needed
+- [x] #2 At most one daemon per herdr session still holds (daemon lock)
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Every plugin command (new pane.focused hook, close hooks, actions) runs ensure-daemon: if no daemon holds the lock, it starts one in its own session with no pipe to herdr (herdr counts a command in flight until its output closes). The daemon logs to daemon.log itself. Verified in a disposable herdr session: link, first focus, daemon running, hook succeeded; repeated ensure keeps one daemon. ADR-0002.
+<!-- SECTION:FINAL_SUMMARY:END -->
