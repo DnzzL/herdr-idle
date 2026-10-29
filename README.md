@@ -51,6 +51,25 @@ it builds from source, which needs [Go](https://go.dev/dl/).
 
 Checks start the first time you switch panes, then run every 10 minutes.
 
+### Show `asleep` in the sidebar
+
+herdr's default sidebar rows have no state text, so an asleep pane is hard to
+tell from the others. Add these rows to `~/.config/herdr/config.toml`, then run
+`herdr server reload-config`:
+
+```toml
+[ui.sidebar.agents]
+rows = [
+  ["state_icon", "agent", "state_text"],
+  ["workspace", "tab"],
+]
+```
+
+The sidebar then reads `claude · idle`, `claude · working`, or
+`claude · asleep`.
+
+### Try it safely
+
 **It stops your agents.** Want to see first what it would do? The preview
 lists every agent pane and why it would or would not sleep, and changes
 nothing:
@@ -103,25 +122,15 @@ removed worktree), the next check clears the input line and prints that the
 folder is gone, with the command to run from a folder you choose: the agent is
 never resumed somewhere else on its own.
 
-In the sidebar, the pane keeps the agent's name and shows `asleep` instead of
-`idle`. It is reported with state `unknown`, so herdr's priority-sorted agent
-list (`agent_panel_sort = "priority"`) ranks it last, below idle agents. herdr
+An asleep pane stays in the sidebar agent list. It is reported with state
+`unknown`, so herdr's priority-sorted agent list
+(`agent_panel_sort = "priority"`) ranks it last, below idle agents. herdr
 cannot list a pane whose agent has exited under that agent's own kind, so the
 plugin reports it under the stand-in kind `maki`: `herdr agent list` and the
-socket API show asleep panes as agent `maki`, from source `dnzzl.idle`. Once
-you wake the agent, the pane is listed under its real kind again, and gets a
-full quiet period before it can sleep again.
-
-To make asleep panes stand out, style `state_text` in
-`~/.config/herdr/config.toml`:
-
-```toml
-[ui.sidebar.agents]
-rows = [
-  ["state_icon", "agent", { token = "state_text", rules = [{ equals = "asleep", dim = true }] }],
-  ["workspace", "tab"],
-]
-```
+socket API show asleep panes as agent `maki`, from source `dnzzl.idle`. With
+the [sidebar rows](#show-asleep-in-the-sidebar), the sidebar reads
+`claude · asleep`. Once you wake the agent, the pane is listed under its
+real kind again, and gets a full quiet period before it can sleep again.
 
 ### Across herdr restarts
 
@@ -228,8 +237,9 @@ Its quiet clock restarts on any change.
 `exclude`. `preview` lists the pane ids.
 
 **Why does `herdr agent list` call my asleep panes `maki`?** herdr can't list
-a stopped agent under its own kind; `maki` is the stand-in. The sidebar still
-shows the real name. See [How it works](#how-it-works).
+a stopped agent under its own kind; `maki` is the stand-in. With the
+[sidebar rows](#show-asleep-in-the-sidebar), the sidebar shows the real name
+and `asleep`.
 
 **How do I remove it?** `herdr plugin uninstall dnzzl.idle`. Asleep panes keep
 their typed resume command; press Enter to wake each one. Config and state
