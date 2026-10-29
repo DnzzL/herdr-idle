@@ -28,7 +28,7 @@ type Config struct {
 // Default is the config used when the file is missing, and for every key the
 // file leaves out.
 func Default() Config {
-	return Config{IdleAfter: 60 * time.Minute, Interval: 10 * time.Minute}
+	return Config{IdleAfter: 120 * time.Minute, Interval: 10 * time.Minute}
 }
 
 // Excludes reports whether a pane or agent session id is excluded.
@@ -41,7 +41,7 @@ func (c Config) Excludes(id string) bool {
 const Template = `# herdr-idle config. Re-read on every sweep; a missing key uses its default.
 
 # Minutes an agent pane must stay quiet before it is put asleep.
-# idle_minutes = 60
+# idle_minutes = 120
 
 # Minutes between two sweeps of the background daemon.
 # interval_minutes = 10

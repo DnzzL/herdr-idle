@@ -294,6 +294,7 @@ func newWorld(t *testing.T, a herdr.Agent, p herdr.ProcessInfo) (*fakeHerdr, swe
 		CaptureDir: h.captureDir,
 		Config:     &config.File{Path: filepath.Join(t.TempDir(), "config.toml")},
 	}
+	writeConfig(t, s, "")
 	return h, s
 }
 
@@ -748,8 +749,13 @@ func recordCapture(t *testing.T, s sweep.Sweeper, paneID herdr.PaneID) string {
 }
 
 // writeConfig replaces the config file the sweeper reads.
+// writeConfig writes toml as the config file. The tests' timeline assumes
+// a one-hour quiet period: idle_minutes is 60 unless toml sets it.
 func writeConfig(t *testing.T, s sweep.Sweeper, toml string) {
 	t.Helper()
+	if !strings.Contains(toml, "idle_minutes") {
+		toml = "idle_minutes = 60\n" + toml
+	}
 	if err := os.WriteFile(s.Config.Path, []byte(toml), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -880,8 +886,17 @@ func TestTemplateConfigMeansDefaults(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		a, p := claudePane("claude")
 		h, s := newWorld(t, a, p)
-		writeConfig(t, s, config.Template)
-		putAsleep(t, s)
+		if err := os.WriteFile(s.Config.Path, []byte(config.Template), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		run(t, s)
+		time.Sleep(119 * time.Minute)
+		run(t, s)
+		if len(h.events) != 0 {
+			t.Fatalf("asleep before the default two hours: %q", h.events)
+		}
+		time.Sleep(2 * time.Minute)
+		run(t, s)
 		if len(h.events) != 4 {
 			t.Fatalf("events: %q", h.events)
 		}

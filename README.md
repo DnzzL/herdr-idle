@@ -97,7 +97,7 @@ restart. An invalid file is reported with every problem; checks keep the last
 valid config, or do nothing when there was none.
 
 ```toml
-idle_minutes = 60       # quiet time before a pane is put asleep
+idle_minutes = 120      # quiet time before a pane is put asleep
 interval_minutes = 10   # time between two checks
 exclude = []            # pane ids or agent session ids never put asleep
 dry_run = false         # true: log what would happen, do nothing
