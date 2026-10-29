@@ -381,12 +381,17 @@ func (s Sweeper) settlePane(ctx context.Context, paneID herdr.PaneID, ps paneSta
 	if ps.PrefilledShell != shell {
 		if ps.CapturePath != "" {
 			// Show the saved screen, so the pane still tells which
-			// conversation it holds, then where it is saved. Run with
+			// conversation it holds, then where it is saved and the
+			// resume command, which a keystroke can wipe from the
+			// prompt. Run with
 			// Enter before the prefill, so the prefill stays editable at
 			// the next prompt. The leading space keeps it out
 			// of shell history where the shell honours that.
-			notice := " " + shellJoin([]string{"cat", ps.CapturePath}) + "; " +
-				shellJoin([]string{"echo", "herdr-idle: screen saved to " + ps.CapturePath}) + "\r"
+			// command skips aliases and functions: a cat aliased to a
+			// pager would swallow the prefill typed next.
+			notice := " " + shellJoin([]string{"command", "cat", ps.CapturePath}) + "; " +
+				shellJoin([]string{"echo", "herdr-idle: screen saved to " + ps.CapturePath}) + "; " +
+				shellJoin([]string{"echo", "herdr-idle: resume with: " + ps.prefill()}) + "\r"
 			if err := s.Herdr.SendText(ctx, paneID, notice); err != nil {
 				return ps, o, err
 			}

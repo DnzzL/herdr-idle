@@ -1061,10 +1061,12 @@ func TestScreenIsSavedBeforeSIGTERMAndItsPathShownBeforeThePrefill(t *testing.T)
 		if len(shown) != 2 || shown[1] != "claude --resume "+sessionID+" --model opus" {
 			t.Fatalf("pane %s got %q, want a notice then the prefill", a.PaneID, shown)
 		}
-		notice, ok := strings.CutPrefix(shown[0], " cat ")
+		// command: an alias or function named cat (bat, with its pager)
+		// would swallow the prefill typed next.
+		notice, ok := strings.CutPrefix(shown[0], " command cat ")
 		path, _, ok2 := strings.Cut(notice, ";")
-		if !ok || !ok2 || shown[0] != " cat "+path+"; echo 'herdr-idle: screen saved to "+path+"'\r" {
-			t.Fatalf("notice = %q, want the capture shown then its path, run with Enter", shown[0])
+		if !ok || !ok2 || shown[0] != " command cat "+path+"; echo 'herdr-idle: screen saved to "+path+"'; echo 'herdr-idle: resume with: "+shown[1]+"'\r" {
+			t.Fatalf("notice = %q, want the capture shown, its path, then the resume command, run with Enter", shown[0])
 		}
 		if got, ok := h.onDiskAtTerm[path]; !ok || got != h.screens[a.PaneID] {
 			t.Fatalf("at SIGTERM, %s held %q (exists %v); captures: %q", path, got, ok, h.onDiskAtTerm)
@@ -1370,7 +1372,7 @@ func assertAsleepAfterAll(t *testing.T, h *fakeHerdr, prefill string) {
 		t.Errorf("not reported asleep: %+v", h.reports)
 	}
 	typed := h.typed[pane]
-	if len(typed) != 2 || !strings.HasPrefix(typed[0], " cat ") || typed[1] != prefill {
+	if len(typed) != 2 || !strings.HasPrefix(typed[0], " command cat ") || typed[1] != prefill {
 		t.Errorf("typed %q, want the notice then %q, once", typed, prefill)
 	}
 }

@@ -49,9 +49,10 @@ Then the plugin:
    30 seconds later is left alone, never killed, and not stopped again until
    its state changes; if it exits later, the pane is put asleep at the next
    check;
-3. once the shell is back at its prompt, prints the saved screen and where it
-   is (a `cat` and an `echo` it runs), so the pane still shows the end of the
-   conversation; then types `cd` to the agent's directory and the
+3. once the shell is back at its prompt, prints the saved screen, where it
+   is, and the resume command (a `command cat` and two `echo`s it runs), so
+   the pane still shows the end of the conversation and the way back even
+   if the input line gets cleared; then types `cd` to the agent's directory and the
    resume command on the input line, without pressing Enter. It types them
    once per shell: only a new shell, after a herdr restart, gets them again.
 
@@ -155,8 +156,9 @@ are never put asleep. When herdr adds or changes a kind, this table follows.
 
 - Sends `SIGTERM` to the foreground process group of qualifying agent panes.
   Never `SIGKILL`.
-- Types into those panes' shells: one `cat` of the screen capture and `echo` of
-  its path, run with Enter, then the resume command, without Enter.
+- Types into those panes' shells: one `command cat` of the screen capture and
+  `echo`s of its path and the resume command, run with Enter, then the resume
+  command, without Enter.
 - Runs `ps` to see what each candidate agent is running.
 - Writes one state file per herdr session and one screen capture per asleep
   pane in the plugin state directory. Closing a pane, or the tab or
