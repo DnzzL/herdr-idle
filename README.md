@@ -26,16 +26,7 @@ servers, measured on macOS. Ten of them hold 5–8 GB and do nothing.
 herdr-idle stops those agents after two quiet hours and leaves the pane where
 it was. Coming back to an asleep pane looks like this:
 
-```console
-  ✻ Baked for 49s · done Monday 5:17 PM
-────────────────────────────────────────────────────────────────────────
-❯
-────────────────────────────────────────────────────────────────────────
-herdr-idle: screen saved to ~/.local/state/herdr/plugins/dnzzl.idle/…/w88-p1.txt
-herdr-idle: resume with: cd ~/Projects/docs && claude --resume d8382bef-…
-
-~/Projects/docs > cd ~/Projects/docs && claude --resume d8382bef-…█
-```
+![An idle claude pane is put asleep, then resumed with Enter: it still remembers the word from before](docs/demo.gif)
 
 The end of the conversation is still on screen. The command that resumes it is
 already typed. Press **Enter** and you're back in the same session, with the
