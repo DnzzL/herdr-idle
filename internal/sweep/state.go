@@ -37,6 +37,8 @@ type paneState struct {
 	// CapturePath is the file holding the pane's screen from before it was
 	// last put asleep; it goes when the pane is closed.
 	CapturePath string `json:"capture_path,omitempty"`
+	// DirGone is set once the pane was told its folder no longer exists.
+	DirGone bool `json:"dir_gone,omitempty"`
 }
 
 // stopping reports whether the pane's agent was sent SIGTERM and the pane

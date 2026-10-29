@@ -51,7 +51,9 @@ type fakeHerdr struct {
 	children map[int][]herdr.Process
 	// entrypoints is how each Claude session was started, "cli" when
 	// unset; noSessionFile lists sessions with no file at all.
-	entrypoints   map[string]string
+	entrypoints map[string]string
+	// goneDirs are folders deleted since the agent ran in them.
+	goneDirs      map[string]bool
 	noSessionFile map[string]bool
 	screens       map[herdr.PaneID]string // pane → its recent screen text
 	readErr       error
@@ -299,16 +301,22 @@ func newWorld(t *testing.T, a herdr.Agent, p herdr.ProcessInfo) (*fakeHerdr, swe
 		children:      map[int][]herdr.Process{},
 		entrypoints:   map[string]string{},
 		noSessionFile: map[string]bool{},
+		goneDirs:      map[string]bool{},
 		screens:       map[herdr.PaneID]string{},
 		captureDir:    filepath.Join(t.TempDir(), "captures"),
 		onDiskAtTerm:  map[string]string{},
 	}
 	sys := &fakeSignaler{h: h}
 	s := sweep.Sweeper{
-		Herdr:      h,
-		Signaler:   sys,
-		Processes:  sys,
-		Sessions:   sys,
+		Herdr:     h,
+		Signaler:  sys,
+		Processes: sys,
+		Sessions:  sys,
+		DirExists: func(dir string) bool {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			return !h.goneDirs[dir]
+		},
 		StatePath:  filepath.Join(t.TempDir(), "state.json"),
 		CaptureDir: h.captureDir,
 		Config:     &config.File{Path: filepath.Join(t.TempDir(), "config.toml")},
@@ -1071,6 +1079,43 @@ func TestOnlyClaudeSessionsAreChecked(t *testing.T) {
 		putAsleep(t, s)
 		if len(h.events) == 0 || h.events[0] != "SIGTERM 4242" {
 			t.Fatalf("pi pane not put asleep: %q", h.events)
+		}
+	})
+}
+
+// A deleted folder (a removed worktree) makes the prefill's cd fail: the
+// pane says so once, and Enter no longer resumes anywhere.
+func TestAsleepPaneWhoseFolderIsGoneSaysSoOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		p.Foreground[1].Cwd = "/home/me/wt"
+		h, s := newWorld(t, a, p)
+		putAsleep(t, s)
+		before := len(h.typed[pane])
+
+		run(t, s)
+		if got := h.typed[pane][before:]; len(got) != 0 {
+			t.Fatalf("folder still there, typed %q", got)
+		}
+
+		h.mu.Lock()
+		h.goneDirs["/home/me/wt"] = true
+		h.mu.Unlock()
+		out, err := s.Run(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "\x15 echo 'herdr-idle: /home/me/wt no longer exists. To resume this conversation from another folder, cd there and run: claude --resume " + sessionID + "'\r"
+		if got := h.typed[pane][before:]; len(got) != 1 || got[0] != want {
+			t.Fatalf("typed %q, want the line cleared and %q", got, want)
+		}
+		if len(out) != 1 || out[0].Reason != "asleep, folder /home/me/wt gone: told the pane" {
+			t.Fatalf("outcomes = %+v", out)
+		}
+
+		run(t, s)
+		if got := h.typed[pane][before:]; len(got) != 1 {
+			t.Fatalf("told the pane again: %q", got)
 		}
 	})
 }

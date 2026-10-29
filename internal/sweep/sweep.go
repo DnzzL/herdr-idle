@@ -67,6 +67,8 @@ type Sweeper struct {
 	Signaler  Signaler
 	Processes Processes
 	Sessions  Sessions
+	// DirExists reports whether a folder still exists.
+	DirExists func(dir string) bool
 	// StatePath is the JSON file holding each pane's quiet clock and the
 	// panes put asleep. A missing file starts every clock now.
 	StatePath string
@@ -133,7 +135,9 @@ func (s Sweeper) Run(ctx context.Context) ([]Outcome, error) {
 		return nil, err
 	}
 	settled, serr := s.settle(ctx)
-	for _, o := range settled {
+	told, terr := s.tellGoneDirs(ctx)
+	serr = errors.Join(serr, terr)
+	for _, o := range append(settled, told...) {
 		i := slices.IndexFunc(outcomes, func(p Outcome) bool { return p.PaneID == o.PaneID })
 		if i < 0 {
 			outcomes = append(outcomes, o)
@@ -411,7 +415,8 @@ func (s Sweeper) settlePane(ctx context.Context, paneID herdr.PaneID, ps paneSta
 		if err := s.Herdr.SendText(ctx, paneID, ps.prefill()); err != nil {
 			return ps, o, err
 		}
-		ps.PrefilledShell = shell
+		// A new shell has the cd again: tell it again if the folder is gone.
+		ps.PrefilledShell, ps.DirGone = shell, false
 	}
 
 	o.Reason = "rearmed"
@@ -579,4 +584,54 @@ func (s Sweeper) notInteractive(ctx context.Context, a herdr.Agent) (string, err
 		entry = "unknown"
 	}
 	return fmt.Sprintf("session %s was not started interactively (%s): a claude -p run in this pane may have replaced the pane's session", a.Session.Value, entry), nil
+}
+
+// tellGoneDirs tells each asleep pane whose folder was deleted (a removed
+// worktree) that its prefill can no longer work, once, and clears that
+// prefill: resuming in another folder could let the agent edit the wrong
+// repository, so the user picks the folder. A pane whose shell is busy is
+// told at a later sweep.
+func (s Sweeper) tellGoneDirs(ctx context.Context) ([]Outcome, error) {
+	unlock, err := lockState(ctx, s.StatePath)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	st, err := loadState(s.StatePath)
+	if err != nil {
+		return nil, err
+	}
+	var outcomes []Outcome
+	var errs []error
+	for _, id := range slices.Sorted(maps.Keys(st)) {
+		ps := st[id]
+		if ps.AsleepAt.IsZero() || ps.DirGone || ps.Cwd == "" || s.DirExists(ps.Cwd) {
+			continue
+		}
+		info, err := s.Herdr.ProcessInfo(ctx, id)
+		if herr, ok := errors.AsType[*herdr.Error](err); ok && herr.Code == "pane_not_found" {
+			continue
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("pane %s: %w", id, err))
+			continue
+		}
+		if info.ForegroundGroupID != info.ShellPID {
+			continue
+		}
+		msg := "herdr-idle: " + ps.Cwd + " no longer exists. To resume this conversation from another folder, cd there and run: " + shellJoin(ps.ResumeArgv)
+		// Ctrl+U clears the prefill first, or Enter would run it with the
+		// message.
+		if err := s.Herdr.SendText(ctx, id, "\x15 "+shellJoin([]string{"echo", msg})+"\r"); err != nil {
+			errs = append(errs, fmt.Errorf("pane %s: %w", id, err))
+			continue
+		}
+		ps.DirGone = true
+		st[id] = ps
+		outcomes = append(outcomes, Outcome{PaneID: id, Agent: ps.Kind, Reason: "asleep, folder " + ps.Cwd + " gone: told the pane"})
+	}
+	if len(outcomes) > 0 {
+		errs = append(errs, saveState(s.StatePath, st))
+	}
+	return outcomes, errors.Join(errs...)
 }

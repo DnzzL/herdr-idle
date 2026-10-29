@@ -21,6 +21,8 @@ What changed for someone using the plugin. Dates are release dates.
   session id, are left alone. An agent that hasn't stopped 30 seconds after
   being asked is left running, never killed; if it exits later, its pane is
   put asleep at the next check.
+- An asleep pane whose folder was deleted says so, once, and clears its
+  resume command instead of failing on `cd`.
 - A Claude pane is left awake when its session was not started
   interactively: a `claude -p` run in the pane can make herdr take the
   one-shot session as the pane's, and Enter would resume the wrong

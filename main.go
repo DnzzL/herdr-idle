@@ -135,6 +135,11 @@ func newSweeper(getenv func(string) string) (sweep.Sweeper, error) {
 		Signaler:  groupSignaler{},
 		Processes: psProcesses{},
 		Sessions:  claudeSessions{getenv: getenv},
+		// Only a folder known to be missing counts as gone.
+		DirExists: func(dir string) bool {
+			_, err := os.Stat(dir)
+			return !errors.Is(err, fs.ErrNotExist)
+		},
 		StatePath: statePath,
 		// Screens saved before sleep, one directory per session like the state.
 		CaptureDir: strings.TrimSuffix(statePath, ".json") + "-screens",

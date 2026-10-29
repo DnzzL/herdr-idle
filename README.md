@@ -62,7 +62,10 @@ Then the plugin:
    once per shell: only a new shell, after a herdr restart, gets them again.
 
 The resume command continues the same session, in the same directory, with the
-flags you started the agent with (permission mode, model…). Enter wakes the
+flags you started the agent with (permission mode, model…). If that directory is
+deleted later (a removed worktree), the next check clears the input line and
+prints that the folder is gone, with the command to run from a folder you
+choose: the agent is never resumed somewhere else on its own. Enter wakes the
 agent; Ctrl+C clears the line and leaves a plain shell. The pane's scrollback
 is still there.
 
