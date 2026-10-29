@@ -12,6 +12,30 @@ var languageServers = map[string]bool{
 	"gopls": true, "rust-analyzer": true, "clangd": true, "tsserver": true, "jdtls": true,
 }
 
+// withChildren returns the foreground processes, each missing command line
+// taken from the OS table (a process that rewrites its title has none in
+// herdr), followed by the agent's direct children from that table, whatever
+// their group.
+func withChildren(foreground []herdr.Process, agentPID int, table []OSProcess) []herdr.Process {
+	argv := make(map[int][]string, len(table))
+	for _, p := range table {
+		argv[p.PID] = p.Argv
+	}
+	procs := make([]herdr.Process, 0, len(foreground))
+	for _, p := range foreground {
+		if len(p.Argv) == 0 {
+			p.Argv = argv[p.PID]
+		}
+		procs = append(procs, p)
+	}
+	for _, p := range table {
+		if p.PPID == agentPID {
+			procs = append(procs, herdr.Process{PID: p.PID, Argv: p.Argv})
+		}
+	}
+	return procs
+}
+
 // busyChild returns the first process, other than the agent itself, that
 // is not one of its MCP or language servers: running work (a shell, a dev
 // server, a test run) that SIGTERM would cut.

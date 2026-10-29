@@ -42,8 +42,14 @@ type Signaler interface {
 // Processes reads the OS process table. herdr only lists the foreground
 // process group; an agent runs its tool commands in groups of their own.
 type Processes interface {
-	// Children returns the direct children of pid, whatever their group.
-	Children(ctx context.Context, pid int) ([]herdr.Process, error)
+	// List returns every live process, zombies left out.
+	List(ctx context.Context) ([]OSProcess, error)
+}
+
+// OSProcess is one row of the OS process table.
+type OSProcess struct {
+	PID, PPID int
+	Argv      []string
 }
 
 // Sweeper holds what a sweep needs. The zero value is not usable: Run needs
@@ -198,11 +204,14 @@ func (s Sweeper) stop(ctx context.Context, a herdr.Agent, st state, dryRun bool)
 	if !ok {
 		return "no agent process in the foreground", nil
 	}
-	children, err := s.Processes.Children(ctx, agentProc.PID)
+	table, err := s.Processes.List(ctx)
 	if err != nil {
 		return "", err
 	}
-	if p, busy := busyChild(agentProc.PID, append(info.Foreground, children...)); busy {
+	if p, busy := busyChild(agentProc.PID, withChildren(info.Foreground, agentProc.PID, table)); busy {
+		if len(p.Argv) == 0 {
+			return fmt.Sprintf("running pid %d, command line unknown", p.PID), nil
+		}
 		return "running " + strings.Join(p.Argv, " "), nil
 	}
 	argv, ok := resumeArgv(a.Agent, agentProc.Argv, a.Session.Value)

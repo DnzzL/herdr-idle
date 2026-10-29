@@ -47,7 +47,7 @@ type fakeHerdr struct {
 	// run with Enter (a command, not a prefill) lands only here.
 	typed map[herdr.PaneID][]string
 	// children is the OS side: each pid's child processes, whatever their
-	// process group.
+	// process group. It is the whole process table.
 	children map[int][]herdr.Process
 	screens  map[herdr.PaneID]string // pane → its recent screen text
 	readErr  error
@@ -217,10 +217,16 @@ type fakeSignaler struct {
 	onTerminate func()
 }
 
-func (s *fakeSignaler) Children(_ context.Context, pid int) ([]herdr.Process, error) {
+func (s *fakeSignaler) List(context.Context) ([]sweep.OSProcess, error) {
 	s.h.mu.Lock()
 	defer s.h.mu.Unlock()
-	return s.h.children[pid], nil
+	var all []sweep.OSProcess
+	for ppid, children := range s.h.children {
+		for _, c := range children {
+			all = append(all, sweep.OSProcess{PID: c.PID, PPID: ppid, Argv: c.Argv})
+		}
+	}
+	return all, nil
 }
 
 func (s *fakeSignaler) Terminate(pgid int) error {
@@ -966,6 +972,32 @@ func TestPaneWithRunningWorkIsLeftAlone(t *testing.T) {
 			})
 		})
 	}
+}
+
+// A process that rewrites its title (chrome-devtools-mcp) has no command
+// line in herdr; ps still shows what it runs.
+func TestForegroundProcessWithoutCommandLineIsReadFromTheOS(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		p.Foreground = append(p.Foreground,
+			herdr.Process{PID: 9000}, herdr.Process{PID: 9001})
+		h, s := newWorld(t, a, p)
+		h.children[agentPGID] = []herdr.Process{{PID: 9000, Argv: []string{"npm", "exec", "chrome-devtools-mcp@latest"}}}
+		h.children[9000] = []herdr.Process{{PID: 9001, Argv: []string{"chrome-devtools-mcp"}}}
+		putAsleep(t, s)
+		if len(h.events) == 0 || h.events[0] != "SIGTERM 4242" {
+			t.Fatalf("not put asleep: %q", h.events)
+		}
+	})
+}
+
+func TestProcessWithoutAnyCommandLineKeepsThePaneAwake(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("claude")
+		p.Foreground = append(p.Foreground, herdr.Process{PID: 9001})
+		h, s := newWorld(t, a, p)
+		assertLeftAlone(t, h, s, "running pid 9001, command line unknown")
+	})
 }
 
 // assertLeftAlone sweeps once the pane has been quiet long enough and fails
