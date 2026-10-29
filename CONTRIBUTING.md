@@ -9,7 +9,8 @@ on quality: open an issue first and we'll work out whether it fits.
 ## What is most wanted
 
 - **Agent kinds tested in the wild.** Only `claude` and `opencode` are
-  verified; `pi` resumes its session but its replies are unchecked. Put a pane of another kind asleep, press Enter, and file an
+  verified; `pi` resumes its session but its replies are unchecked. Put a
+  pane of another kind asleep, press Enter, and file an
   [agent kind report](../../issues/new/choose), whatever happened. A report
   is worth more than code.
 - **Processes that wrongly keep a pane awake** (or wrongly let it sleep). The
