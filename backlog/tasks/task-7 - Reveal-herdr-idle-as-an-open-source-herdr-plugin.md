@@ -4,7 +4,7 @@ title: Reveal herdr-idle as an open-source herdr plugin
 status: To Do
 assignee: []
 created_date: 2026-10-29 14:02
-updated_date: '2026-10-29T15:29:00Z'
+updated_date: '2026-10-29T16:29:00Z'
 labels:
   - ready-for-human
 dependencies:
@@ -66,4 +66,6 @@ Verified with claude, pi and opencode; 15 other kinds use herdr's resume recipes
 herdr-idle: a plugin that gives back the RAM of agents you left idle. After two quiet hours it stops the agent (SIGTERM), keeps the pane and its spot in the sidebar, and types the resume command; Enter resumes the same conversation. ~0.5–0.8 GB per idle Claude Code pane here. `herdr plugin install DnzzL/herdr-idle`, try the preview action first. Reports for kinds other than claude/pi/opencode welcome: https://github.com/DnzzL/herdr-idle
 
 Correction to the drafts after the TASK-1.9 matrix: replace "Verified with claude, pi and opencode; 15 other kinds" with "Verified with claude and opencode; pi resumes its session, 15 other kinds use herdr's resume recipes but are untested."
+
+Release prepared locally: README rewritten for launch (hero, demo pane, comparison, safety, FAQ), manifest 0.1.0, CHANGELOG dated 2026-10-29, local tag v0.1.0 (13d6f38). Not pushed; waiting for the maintainer's OK to create the public repo.
 <!-- SECTION:NOTES:END -->
