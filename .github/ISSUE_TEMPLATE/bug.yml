@@ -1,0 +1,28 @@
+name: Bug
+description: Something went wrong. A lost or unreachable conversation is the worst kind; say so in the title.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: Agent kind, what was running in the pane, what you did before and after it slept
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: herdr (`herdr --version`), herdr-idle (`herdr plugin list`), agent, OS
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Daemon log
+      description: The lines for the pane from `~/.local/state/herdr/plugins/dnzzl.idle/daemon.log`, and the output of the preview action
+      render: text

@@ -9,7 +9,8 @@ A [herdr](https://herdr.dev) plugin for macOS and Linux.
 ## Why
 
 An agent pane waiting days for a PR review or a reply still holds its agent and
-its MCP servers in memory, often 1–2 GB each. Closing it frees the memory but
+its MCP servers in memory: 540–770 MB per idle Claude Code pane with three MCP
+servers, measured on macOS. Ten such panes hold 5–8 GB doing nothing. Closing it frees the memory but
 loses its place in the layout, its spot in the agent list, and the easy way back
 to the right session. herdr only resumes agents when its server restarts.
 
@@ -27,6 +28,17 @@ instead, which needs [Go](https://go.dev/dl/).
 Once installed, a background check runs every 10 minutes in each herdr session,
 from the first time you switch panes; no herdr restart needed.
 With no config file, the defaults below apply.
+
+**It stops your agents.** Any agent pane quiet for two hours, that you are not
+looking at, gets its agent stopped (`SIGTERM`, never `SIGKILL`). To see first
+what it would do, run the preview action, which changes nothing:
+
+```bash
+herdr plugin action invoke preview --plugin dnzzl.idle
+```
+
+To try it without stopping anything, set `dry_run = true` in the
+[config](#config) first.
 
 ## What an asleep pane looks like
 
@@ -185,6 +197,15 @@ are never put asleep. When herdr adds or changes a kind, this table follows.
   before it was restored as asleep) is restored once the shell is free.
 - An asleep pane herdr does not bring back after a restart keeps its state
   entry and capture file until the next pane, tab or workspace is closed.
+- Agents delete old conversations on their own: Claude Code removes those
+  untouched for `cleanupPeriodDays` (30 by default). A pane asleep longer than
+  that keeps a resume command for a conversation that is gone. Raise the
+  setting in `~/.claude/settings.json` if you leave panes asleep for weeks.
+
+## Contributing
+
+Reports of agent kinds tested in the wild are the most wanted contribution:
+see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Development
 
@@ -195,3 +216,7 @@ go test -race -shuffle=on ./...
 Pushing a `v*` tag that matches `version` in `herdr-plugin.toml` publishes a
 release with the four binaries, `checksums.txt`, and that version's
 [CHANGELOG](CHANGELOG.md) section as notes.
+
+## License
+
+MIT

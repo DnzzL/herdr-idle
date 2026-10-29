@@ -1,0 +1,44 @@
+name: Agent kind report
+description: You put a pane asleep and woke it. Tell us how it went, good or bad.
+title: "Kind report: <kind>"
+labels: ["kind-report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Only `claude`, `pi` and `opencode` are verified so far. One report per kind and agent version is worth more than code.
+  - type: input
+    id: kind
+    attributes:
+      label: Agent kind
+      description: As shown by `herdr agent list` before it slept (claude, codex, droid…)
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Agent version, herdr version (`herdr --version`), herdr-idle version (`herdr plugin list`), OS
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: After Enter, did the same conversation come back?
+      options:
+        - "Yes: same conversation, same folder, same flags"
+        - "Partly: resumed, but something differed (say what below)"
+        - "No: did not resume, or resumed the wrong conversation"
+    validations:
+      required: true
+  - type: textarea
+    id: prefill
+    attributes:
+      label: The prefilled command
+      description: The `herdr-idle: resume with:` line from the pane, and the command the agent was started with
+      render: shell
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Errors on screen, an agent that did not stop, flags that were lost…
