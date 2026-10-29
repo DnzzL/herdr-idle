@@ -134,6 +134,7 @@ func newSweeper(getenv func(string) string) (sweep.Sweeper, error) {
 		Herdr:     herdr.New(socket),
 		Signaler:  groupSignaler{},
 		Processes: psProcesses{},
+		Sessions:  claudeSessions{getenv: getenv},
 		StatePath: statePath,
 		// Screens saved before sleep, one directory per session like the state.
 		CaptureDir: strings.TrimSuffix(statePath, ".json") + "-screens",

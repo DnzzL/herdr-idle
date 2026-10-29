@@ -49,8 +49,12 @@ type fakeHerdr struct {
 	// children is the OS side: each pid's child processes, whatever their
 	// process group. It is the whole process table.
 	children map[int][]herdr.Process
-	screens  map[herdr.PaneID]string // pane → its recent screen text
-	readErr  error
+	// entrypoints is how each Claude session was started, "cli" when
+	// unset; noSessionFile lists sessions with no file at all.
+	entrypoints   map[string]string
+	noSessionFile map[string]bool
+	screens       map[herdr.PaneID]string // pane → its recent screen text
+	readErr       error
 	// ignoreTERM lists process groups that survive SIGTERM.
 	ignoreTERM map[int]bool
 	// captureDir is where the sweep saves screens; onDiskAtTerm is what it
@@ -217,6 +221,18 @@ type fakeSignaler struct {
 	onTerminate func()
 }
 
+func (s *fakeSignaler) ClaudeEntrypoint(_ context.Context, id string) (string, error) {
+	s.h.mu.Lock()
+	defer s.h.mu.Unlock()
+	if s.h.noSessionFile[id] {
+		return "", fs.ErrNotExist
+	}
+	if e, ok := s.h.entrypoints[id]; ok {
+		return e, nil
+	}
+	return "cli", nil
+}
+
 func (s *fakeSignaler) List(context.Context) ([]sweep.OSProcess, error) {
 	s.h.mu.Lock()
 	defer s.h.mu.Unlock()
@@ -276,20 +292,23 @@ func claudePane(argv ...string) (herdr.Agent, herdr.ProcessInfo) {
 func newWorld(t *testing.T, a herdr.Agent, p herdr.ProcessInfo) (*fakeHerdr, sweep.Sweeper) {
 	t.Helper()
 	h := &fakeHerdr{
-		agents:       []herdr.Agent{a},
-		procs:        map[herdr.PaneID]herdr.ProcessInfo{a.PaneID: p},
-		exitAt:       map[herdr.PaneID]time.Time{},
-		typed:        map[herdr.PaneID][]string{},
-		children:     map[int][]herdr.Process{},
-		screens:      map[herdr.PaneID]string{},
-		captureDir:   filepath.Join(t.TempDir(), "captures"),
-		onDiskAtTerm: map[string]string{},
+		agents:        []herdr.Agent{a},
+		procs:         map[herdr.PaneID]herdr.ProcessInfo{a.PaneID: p},
+		exitAt:        map[herdr.PaneID]time.Time{},
+		typed:         map[herdr.PaneID][]string{},
+		children:      map[int][]herdr.Process{},
+		entrypoints:   map[string]string{},
+		noSessionFile: map[string]bool{},
+		screens:       map[herdr.PaneID]string{},
+		captureDir:    filepath.Join(t.TempDir(), "captures"),
+		onDiskAtTerm:  map[string]string{},
 	}
 	sys := &fakeSignaler{h: h}
 	s := sweep.Sweeper{
 		Herdr:      h,
 		Signaler:   sys,
 		Processes:  sys,
+		Sessions:   sys,
 		StatePath:  filepath.Join(t.TempDir(), "state.json"),
 		CaptureDir: h.captureDir,
 		Config:     &config.File{Path: filepath.Join(t.TempDir(), "config.toml")},
@@ -1012,6 +1031,47 @@ func TestProcessWithoutAnyCommandLineKeepsThePaneAwake(t *testing.T) {
 		p.Foreground = append(p.Foreground, herdr.Process{PID: 9001})
 		h, s := newWorld(t, a, p)
 		assertLeftAlone(t, h, s, "running pid 9001, command line unknown")
+	})
+}
+
+// A claude -p run inside the pane makes herdr take its one-shot session as
+// the pane's: resuming it would bring back the wrong conversation.
+func TestClaudePaneSleepsOnlyOnAnInteractiveSession(t *testing.T) {
+	tests := []struct {
+		name   string
+		setup  func(h *fakeHerdr)
+		reason string
+	}{
+		{"started by claude -p", func(h *fakeHerdr) { h.entrypoints[sessionID] = "sdk-cli" },
+			"session " + sessionID + " was not started interactively (sdk-cli): a claude -p run in this pane may have replaced the pane's session"},
+		{"file says nothing", func(h *fakeHerdr) { h.entrypoints[sessionID] = "" },
+			"session " + sessionID + " was not started interactively (unknown): a claude -p run in this pane may have replaced the pane's session"},
+		{"no session file", func(h *fakeHerdr) { h.noSessionFile[sessionID] = true },
+			"no Claude session file for " + sessionID},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				a, p := claudePane("claude")
+				h, s := newWorld(t, a, p)
+				tt.setup(h)
+				assertLeftAlone(t, h, s, tt.reason)
+			})
+		})
+	}
+}
+
+func TestOnlyClaudeSessionsAreChecked(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, p := claudePane("pi", "--session", "/old.jsonl")
+		a.Agent = "pi"
+		a.Session = &herdr.AgentSession{Source: "herdr:pi", Agent: "pi", Kind: "path", Value: "/s.jsonl"}
+		h, s := newWorld(t, a, p)
+		h.noSessionFile["/s.jsonl"] = true
+		putAsleep(t, s)
+		if len(h.events) == 0 || h.events[0] != "SIGTERM 4242" {
+			t.Fatalf("pi pane not put asleep: %q", h.events)
+		}
 	})
 }
 

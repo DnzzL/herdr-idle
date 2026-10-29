@@ -41,6 +41,10 @@ A pane is put asleep when all of these hold:
   `jdtls`;
 - its kind is in the [supported table](#supported-kinds) and herdr knows its
   session id;
+- for `claude`, that session was started interactively. A `claude -p` run
+  inside an agent pane makes herdr take the one-shot session as the pane's;
+  the plugin checks Claude's session file and leaves the pane awake rather
+  than resume the wrong conversation;
 - it is not in `exclude`.
 
 Then the plugin:

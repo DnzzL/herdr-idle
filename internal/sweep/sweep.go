@@ -46,6 +46,14 @@ type Processes interface {
 	List(ctx context.Context) ([]OSProcess, error)
 }
 
+// Sessions reads what agents record about their own sessions.
+type Sessions interface {
+	// ClaudeEntrypoint returns how a Claude Code session was started: "cli"
+	// interactive, "sdk-cli" for claude -p, "" when the file does not say.
+	// It fails with fs.ErrNotExist when no session file has that id.
+	ClaudeEntrypoint(ctx context.Context, sessionID string) (string, error)
+}
+
 // OSProcess is one row of the OS process table.
 type OSProcess struct {
 	PID, PPID int
@@ -58,6 +66,7 @@ type Sweeper struct {
 	Herdr     Herdr
 	Signaler  Signaler
 	Processes Processes
+	Sessions  Sessions
 	// StatePath is the JSON file holding each pane's quiet clock and the
 	// panes put asleep. A missing file starts every clock now.
 	StatePath string
@@ -217,6 +226,9 @@ func (s Sweeper) stop(ctx context.Context, a herdr.Agent, st state, dryRun bool)
 	argv, ok := resumeArgv(a.Agent, agentProc.Argv, a.Session.Value)
 	if !ok {
 		return fmt.Sprintf("agent command line not recognised: %q", agentProc.Argv), nil
+	}
+	if reason, err := s.notInteractive(ctx, a); reason != "" || err != nil {
+		return reason, err
 	}
 	before := st[a.PaneID]
 	ps := before
@@ -544,4 +556,27 @@ func groupLeader(info herdr.ProcessInfo) (herdr.Process, bool) {
 		}
 	}
 	return herdr.Process{}, false
+}
+
+// notInteractive says why the pane's Claude session may not be the pane's
+// conversation: a claude -p run in the pane makes herdr take its one-shot
+// session as the pane's. Other kinds are not checked.
+func (s Sweeper) notInteractive(ctx context.Context, a herdr.Agent) (string, error) {
+	if a.Agent != "claude" {
+		return "", nil
+	}
+	entry, err := s.Sessions.ClaudeEntrypoint(ctx, a.Session.Value)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "no Claude session file for " + a.Session.Value, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if entry == "cli" {
+		return "", nil
+	}
+	if entry == "" {
+		entry = "unknown"
+	}
+	return fmt.Sprintf("session %s was not started interactively (%s): a claude -p run in this pane may have replaced the pane's session", a.Session.Value, entry), nil
 }

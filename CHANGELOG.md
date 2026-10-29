@@ -21,6 +21,10 @@ What changed for someone using the plugin. Dates are release dates.
   session id, are left alone. An agent that hasn't stopped 30 seconds after
   being asked is left running, never killed; if it exits later, its pane is
   put asleep at the next check.
+- A Claude pane is left awake when its session was not started
+  interactively: a `claude -p` run in the pane can make herdr take the
+  one-shot session as the pane's, and Enter would resume the wrong
+  conversation.
 - Asleep panes stay asleep across a herdr restart instead of all waking at
   once, and come back listed and prefilled.
 - `config.toml` sets `idle_minutes` (120), `interval_minutes` (10), `exclude`
