@@ -2,7 +2,7 @@
 
 What changed for someone using the plugin. Dates are release dates.
 
-## v0.1.0 — unreleased
+## v0.1.0 — 2026-10-29
 
 - First release. Agent panes that stay quiet for two hours are put **asleep**:
   the agent and its MCP servers are stopped to free their memory, and the
@@ -39,5 +39,6 @@ What changed for someone using the plugin. Dates are release dates.
   sleep; `idle-now` runs a check now; `config` opens the config file.
 - Installs a prebuilt, checksum-verified binary on macOS and Linux
   (arm64/amd64), so Go is not needed; anything else builds from source.
-- Every herdr kind with a resume recipe is supported but marked unverified
-  until checked by hand: see the supported-kinds table in the README.
+- Every herdr kind with a resume recipe is supported. `claude` and
+  `opencode` are verified by real resume runs; the others stay unverified
+  until checked by hand: see the supported-agents table in the README.

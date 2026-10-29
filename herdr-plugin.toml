@@ -1,6 +1,6 @@
 id = "dnzzl.idle"
 name = "Idle"
-version = "0.0.0"
+version = "0.1.0"
 min_herdr_version = "0.9.5"
 description = "Puts idle agent panes asleep to free their memory; the pane stays in place with the resume command prefilled."
 platforms = ["linux", "macos"]
