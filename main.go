@@ -169,26 +169,17 @@ func runDaemon(ctx context.Context, getenv func(string) string, stdout io.Writer
 	signal.Ignore(syscall.SIGPIPE)
 	// The daemon logs to its own file: one started by ensureDaemon has no
 	// output herdr reads.
-	logPath := filepath.Join(filepath.Dir(s.StatePath), "daemon.log")
-	logFile, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
-	if err != nil {
-		return err
-	}
+	logFile := &rotatingFile{path: filepath.Join(filepath.Dir(s.StatePath), "daemon.log"), max: 1 << 20}
 	defer logFile.Close()
+	changes := newChangeLog(logFile, time.Now)
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
 	d := sweep.Daemon{
-		Sweeper: s,
-		Plugin:  herdr.New(getenv("HERDR_SOCKET_PATH")),
-		Log: func(outcomes []sweep.Outcome, err error) {
-			fmt.Fprintln(logFile, time.Now().Format(time.RFC3339))
-			printOutcomes(logFile, outcomes, err)
-			if err != nil {
-				fmt.Fprintln(logFile, "error:", err)
-			}
-		},
+		Sweeper:  s,
+		Plugin:   herdr.New(getenv("HERDR_SOCKET_PATH")),
+		Log:      changes.log,
 		Upgraded: binaryReplaced(exe),
 		Reexec: func() error {
 			return syscall.Exec(exe, os.Args, append(os.Environ(), reexecEnv+"=1"))

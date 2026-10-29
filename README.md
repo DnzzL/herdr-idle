@@ -78,7 +78,8 @@ Checks run in a background process, one per herdr session. herdr starts it
 with its server; after an install it starts the first time you switch panes or
 run an action. It stops when the plugin is disabled or removed, or herdr
 stops, and moves to a new binary on its own after an update. It logs to
-`~/.local/state/herdr/plugins/dnzzl.idle/daemon.log`.
+`~/.local/state/herdr/plugins/dnzzl.idle/daemon.log`: one line each time a
+pane's state changes, and every error; past 1 MB it moves to `daemon.log.1`.
 
 After a herdr restart, asleep panes stay asleep: within half a minute they come
 back listed as `asleep` and prefilled, and no agent starts on its own. The

@@ -1,9 +1,10 @@
 ---
 id: TASK-4
 title: Daemon log repeats every pane every sweep and grows without bound
-status: To Do
+status: Done
 assignee: []
-created_date: '2026-10-27 17:16'
+created_date: 2026-10-27 17:16
+updated_date: '2026-10-29T14:46:00Z'
 labels:
   - ready-for-agent
 dependencies: []
@@ -19,7 +20,13 @@ Dogfood finding (2026-10-27). daemon.log gets one line per agent pane per sweep 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Each sweep logs only panes whose outcome changed, and errors
-- [ ] #2 A vanished asleep pane is logged once, not every rearm check
-- [ ] #3 The log file stays bounded over weeks of uptime
+- [x] #1 Each sweep logs only panes whose outcome changed, and errors
+- [x] #2 A vanished asleep pane is logged once, not every rearm check
+- [x] #3 The log file stays bounded over weeks of uptime
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Daemon log writes a pane only when its outcome changes (digits ignored, so "quiet for" ticking is no change; partial rearm outcomes keep other panes), errors always; one line per entry with timestamp. File rotates to daemon.log.1 past 1 MB. Tests in main_test (daemonlog_test.go). Re-exec restarts the memory: first sweep after an upgrade lists every pane once.
+<!-- SECTION:FINAL_SUMMARY:END -->

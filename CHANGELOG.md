@@ -31,7 +31,8 @@ What changed for someone using the plugin. Dates are release dates.
   and `dry_run`. Changes apply on the next check, without a restart.
 - Starts working right after install, from the first pane switch, without a
   herdr restart; picks up a new version on its own after an update. Its log
-  is `daemon.log` in the plugin state directory.
+  is `daemon.log` in the plugin state directory: one line per change and
+  per error, never more than about 2 MB.
 - Actions: `preview` lists every agent pane and why it would or would not
   sleep; `idle-now` runs a check now; `config` opens the config file.
 - Installs a prebuilt, checksum-verified binary on macOS and Linux
