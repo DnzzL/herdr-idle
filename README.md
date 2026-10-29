@@ -154,17 +154,17 @@ herdr does not know the session id and the pane is left alone.
 
 | Kind | Status |
 |---|---|
-| `claude` | unverified |
+| `claude` | verified |
 | `codex` | unverified |
 | `copilot` | unverified |
 | `devin` | unverified |
 | `droid` | unverified |
 | `kimi` | unverified |
 | `mastracode` | unverified |
-| `pi` | unverified |
+| `pi` | resumes the same session file; replies not checked |
 | `omp` | unverified |
 | `hermes` | unverified |
-| `opencode` | unverified |
+| `opencode` | verified; see known gaps |
 | `qodercli` | unverified |
 | `qwen` | unverified |
 | `kilo` | unverified |
@@ -197,6 +197,9 @@ are never put asleep. When herdr adds or changes a kind, this table follows.
   before it was restored as asleep) is restored once the shell is free.
 - An asleep pane herdr does not bring back after a restart keeps its state
   entry and capture file until the next pane, tab or workspace is closed.
+- An `opencode` pane woken from asleep gets no session id from herdr's
+  opencode integration (nor does any `opencode --session …` run), so it is
+  not put asleep again until opencode is started fresh in it.
 - Agents delete old conversations on their own: Claude Code removes those
   untouched for `cleanupPeriodDays` (30 by default). A pane asleep longer than
   that keeps a resume command for a conversation that is gone. Raise the
